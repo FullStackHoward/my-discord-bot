@@ -1,7 +1,7 @@
 require('dotenv').config();
 
 const https = require('https');
-const { Client, GatewayIntentBits, PermissionFlagsBits } = require('discord.js');
+const { Client, GatewayIntentBits, GuildScheduledEventStatus } = require('discord.js');
 
 // Create a new client instance
 const client = new Client({
@@ -19,6 +19,11 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const VG_GUILD_ID = process.env.VG_GUILD_ID;
 const VC_GUILD_ID = process.env.VC_GUILD_ID;
 const APP_GUILD_ID = process.env.APP_GUILD_ID;
+
+const EVENT_CHANNELS = [
+    { guildId: VG_GUILD_ID, channelId: process.env.VG_EVENT_CHANNEL },
+    { guildId: VC_GUILD_ID, channelId: process.env.VC_EVENT_CHANNEL }
+];
 
 const SERVER_CONFIGS = {};
 
@@ -56,10 +61,17 @@ SERVER_CONFIGS[APP_GUILD_ID] = {
     ]
 };
 
+let eventChannelSyncRunning = false;
+
 // Bot ready event
 client.once('ready', () => {
     console.log(`${client.user.tag} is now online and ready!`);
     console.log(`Configured for ${Object.keys(SERVER_CONFIGS).length} server(s)`);
+
+    void syncEventChannels();
+    setInterval(() => {
+        void syncEventChannels();
+    }, 15 * 60 * 1000);
 });
 
 // Handle member joining a server
@@ -203,6 +215,136 @@ async function postAnnouncement(title, content, link = null) {
         req.write(payload);
         req.end();
     });
+}
+
+async function syncEventChannels() {
+    if (eventChannelSyncRunning) {
+        return;
+    }
+
+    eventChannelSyncRunning = true;
+
+    try {
+        await Promise.all(EVENT_CHANNELS.map(async ({ guildId, channelId }) => {
+            try {
+                await syncEventChannel(guildId, channelId);
+            } catch (error) {
+                console.error(`Error syncing events for guild ${guildId}:`, error);
+            }
+        }));
+    } finally {
+        eventChannelSyncRunning = false;
+    }
+}
+
+async function syncEventChannel(guildId, channelId) {
+    if (!guildId || !channelId) {
+        return;
+    }
+
+    const guild = client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
+    if (!guild) {
+        console.log(`Guild not found for event sync: ${guildId}`);
+        return;
+    }
+
+    const channel = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId).catch(() => null);
+    if (!channel || !channel.isTextBased()) {
+        console.log(`Events channel not found or not text-based for guild ${guildId}: ${channelId}`);
+        return;
+    }
+
+    const scheduledEvents = await guild.scheduledEvents.fetch().catch(error => {
+        console.error(`Failed to fetch scheduled events for ${guild.name}:`, error);
+        return null;
+    });
+
+    if (!scheduledEvents) {
+        return;
+    }
+
+    const messages = await fetchRecentChannelMessages(channel);
+    const botUserId = client.user.id;
+    const eventMessageMap = new Map();
+
+    for (const message of messages.values()) {
+        if (message.author?.id !== botUserId) {
+            continue;
+        }
+
+        const eventId = extractEventIdFromMessage(message, guildId);
+        if (eventId) {
+            eventMessageMap.set(eventId, message);
+        }
+    }
+
+    for (const scheduledEvent of scheduledEvents.values()) {
+        if (scheduledEvent.status !== GuildScheduledEventStatus.Scheduled && scheduledEvent.status !== GuildScheduledEventStatus.Active) {
+            continue;
+        }
+
+        if (!eventMessageMap.has(scheduledEvent.id)) {
+            try {
+                await channel.send(`https://discord.com/events/${guildId}/${scheduledEvent.id}`);
+            } catch (error) {
+                console.error(`Failed to post event ${scheduledEvent.id} in ${guild.name}:`, error);
+            }
+        }
+    }
+
+    for (const [eventId, message] of eventMessageMap.entries()) {
+        const currentEvent = scheduledEvents.get(eventId);
+
+        if (currentEvent && (currentEvent.status === GuildScheduledEventStatus.Scheduled || currentEvent.status === GuildScheduledEventStatus.Active)) {
+            continue;
+        }
+
+        try {
+            await message.delete();
+        } catch (error) {
+            console.log(`Could not delete event post ${eventId} in ${guild.name}:`, error.message);
+        }
+    }
+}
+
+async function fetchRecentChannelMessages(channel, maxMessages = 500) {
+    const allMessages = new Map();
+    let before;
+
+    while (allMessages.size < maxMessages) {
+        const fetchOptions = { limit: Math.min(100, maxMessages - allMessages.size) };
+
+        if (before) {
+            fetchOptions.before = before;
+        }
+
+        const messages = await channel.messages.fetch(fetchOptions);
+
+        if (messages.size === 0) {
+            break;
+        }
+
+        for (const [messageId, message] of messages.entries()) {
+            allMessages.set(messageId, message);
+        }
+
+        before = messages.last().id;
+
+        if (messages.size < fetchOptions.limit) {
+            break;
+        }
+    }
+
+    return allMessages;
+}
+
+function extractEventIdFromMessage(message, guildId) {
+    const match = message.content.match(new RegExp(`https?:\\/\\/discord\\.com\\/events\\/${escapeRegex(guildId)}\\/(\\d+)`));
+    return match ? match[1] : null;
+}
+
+function escapeRegex(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // Message handler

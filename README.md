@@ -112,6 +112,7 @@ BOT_TOKEN=your-bot-token-here
 
 # Vice Gamers
 VG_GUILD_ID=
+VG_EVENT_CHANNEL=
 VG_VERIFIED_ROLE=
 VG_STAFF_ROLE_1=
 VG_STAFF_ROLE_2=
@@ -120,6 +121,7 @@ VG_STAFF_USER_2=
 
 # Vice Creators
 VC_GUILD_ID=
+VC_EVENT_CHANNEL=
 VC_VERIFIED_ROLE=
 VC_STAFF_ROLE_1=
 VC_STAFF_ROLE_2=
@@ -147,6 +149,12 @@ node index.js
 pm2 start index.js --name vice-bot
 pm2 save
 ```
+
+### Event Channel Auto-Posting
+
+The bot automatically mirrors active scheduled events into each server's dedicated events channel and removes the post once the event is completed, canceled, or deleted.
+
+Make sure the bot has `Send Messages` and `Read Message History` permission in each events channel.
 
 ---
 
