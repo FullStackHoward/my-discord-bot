@@ -17,6 +17,7 @@ jobs:
           script: |
             cd ~/public_html/vice-verify-bot
             git reset --hard HEAD
+            rm -f package-lock.json
             git pull origin main
             npm ci
             pm2 restart vice-verify-bot
