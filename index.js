@@ -13,7 +13,7 @@ const client = new Client({
     ]
 });
 
-// Configuration pulled from .env
+// Conf pulled from .env
 const BOT_TOKEN = process.env.BOT_TOKEN;
 
 const VG_GUILD_ID = process.env.VG_GUILD_ID;
