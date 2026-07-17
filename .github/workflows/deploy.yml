@@ -16,6 +16,7 @@ jobs:
           script_stop: true
           script: |
             cd ~/public_html/vice-verify-bot
+            git reset --hard HEAD
             git pull origin main
-            npm install
+            npm ci
             pm2 restart vice-verify-bot
