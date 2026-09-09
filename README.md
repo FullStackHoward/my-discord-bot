@@ -133,6 +133,22 @@ APP_GUILD_ID=
 APP_VERIFIED_ROLE=
 APP_STAFF_ROLE_1=
 APP_STAFF_USER_1=
+
+# Subscription tier roles (Vicer+, Vicer++, Super Vicer)
+VG_TIER_VICER_PLUS=
+VG_TIER_VICER_PLUS_PLUS=
+VG_TIER_SUPER_VICER=
+VC_TIER_VICER_PLUS=
+VC_TIER_VICER_PLUS_PLUS=
+VC_TIER_SUPER_VICER=
+
+# Bot log channels
+VG_LOG_CHANNEL=
+VC_LOG_CHANNEL=
+
+# Reference only, not read by the reconciliation logic
+VG_WAITING_ROOM_CHANNEL=
+VC_WAITING_ROOM_CHANNEL=
 ```
 
 Never commit the `.env` file to version control.
@@ -156,6 +172,28 @@ The bot automatically mirrors active scheduled events into each server's dedicat
 
 Make sure the bot has `Send Messages` and `Read Message History` permission in each events channel.
 
+### Application Server Auto-Kick
+
+Once a member is verified in Vice Gamers or Vice Creators, the bot removes them from the Application Server if they still hold the accepted role there. Staff and the server owner are never kicked. If the member already left, or the bot lacks the permission or role position to kick them, the attempt is logged and skipped.
+
+### Subscription Tier Sync
+
+Vicer+, Vicer++, and Super Vicer are kept in sync between Vice Gamers and Vice Creators:
+
+- Gaining, changing, or losing a tier on one server mirrors it on the other.
+- Joining a server grants whatever tier the member already holds on the other one.
+- A member holding two tier roles at once resolves to the highest.
+- If both servers show a *different* tier for the same member, the bot logs it for manual review and changes nothing — auto-correcting would either upgrade someone for free or downgrade a paying member.
+
+### Hourly Reconciliation
+
+Every hour (and once at startup) the bot sweeps both main servers to catch anything the live event handlers missed during downtime or a transient API failure:
+
+- Members accepted elsewhere but missing the verified role get it granted, then the auto-kick above runs for them.
+- Tier roles are compared across both servers and synced or flagged as above.
+
+Bots, staff, and server owners are skipped. Every correction posts to the server's bot log channel.
+
 ---
 
 ## Deployment
@@ -173,6 +211,7 @@ When inviting the bot to a server, the following permissions are required:
 - Send Messages
 - Read Message History
 - Manage Events (required for planned event sync feature)
+- Kick Members (required on the Application Server for the auto-kick)
 
 ---
 
