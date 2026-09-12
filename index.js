@@ -1,7 +1,7 @@
 require('dotenv').config();
 
 const https = require('https');
-const { Client, GatewayIntentBits, GuildScheduledEventStatus } = require('discord.js');
+const { Client, EmbedBuilder, GatewayIntentBits, GuildScheduledEventStatus } = require('discord.js');
 
 // Create a new client instance
 const client = new Client({
@@ -77,11 +77,38 @@ SERVER_CONFIGS[VC_GUILD_ID].tierRoleIds = {
     superVicer: process.env.VC_TIER_SUPER_VICER
 };
 
-// Bot log channels, one per main server.
+// Bot log channels, one per server.
 const LOG_CHANNELS = {
     [VG_GUILD_ID]: process.env.VG_LOG_CHANNEL,
-    [VC_GUILD_ID]: process.env.VC_LOG_CHANNEL
+    [VC_GUILD_ID]: process.env.VC_LOG_CHANNEL,
+    [APP_GUILD_ID]: process.env.APP_LOG_CHANNEL
 };
+
+// Embed colors by event category, so staff can scan a log channel at a glance.
+const LOG_COLORS = {
+    join: 0x5865F2,
+    verifyAuto: 0x57F287,
+    verifyManual: 0x57F287,
+    kick: 0xE67E22,
+    leave: 0x99AAB5,
+    tierGrant: 0xEB459E,
+    tierRemove: 0x992D22,
+    mismatch: 0xFEE75C,
+    // Deliberately the same blue as join; reconciliation entries are told apart by the 🔄 in the title.
+    reconciliation: 0x5865F2,
+    error: 0xED4245
+};
+
+// Staff never see the raw TIER_ORDER keys; every log goes through tierLabel().
+const TIER_DISPLAY_NAMES = {
+    vicerPlus: 'Vicer+',
+    vicerPlusPlus: 'Vicer++',
+    superVicer: 'Super Vicer'
+};
+
+function tierLabel(tierName) {
+    return TIER_DISPLAY_NAMES[tierName] || tierName;
+}
 
 // Reference only: the reconciliation job queries by role, not channel visibility.
 // Kept here so the "who is stuck in the waiting room" mapping is documented in code.
@@ -126,6 +153,16 @@ client.on('guildMemberAdd', async (member) => {
 
         console.log(`${member.user.tag} joined ${member.guild.name} (${guildId})`);
 
+        await sendStaffLog(guildId, {
+            color: LOG_COLORS.join,
+            title: '📥 Member Joined',
+            description: `**${member.user.tag}** (<@${member.id}>) joined ${guildLabel(guildId)}.`,
+            fields: [
+                { name: 'Account Created', value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>`, inline: true },
+                { name: 'Member Count', value: `${member.guild.memberCount}`, inline: true }
+            ]
+        });
+
         const verificationSource = await checkAutoVerificationSource(member.user.id, guildId);
 
         if (verificationSource.shouldVerify && canManageRole(member.guild, serverConfig.verifiedRoleId)) {
@@ -133,6 +170,24 @@ client.on('guildMemberAdd', async (member) => {
 
             await member.roles.add(verifiedRole);
             console.log(`Auto-verified ${member.user.tag} in ${member.guild.name}`);
+
+            let verificationBasis;
+            if (verificationSource.fromServer3) {
+                verificationBasis = 'an accepted application on the Application Server';
+            } else if (verificationSource.fromOtherMainServer) {
+                verificationBasis = 'being verified on the other main server';
+            } else {
+                verificationBasis = 'being verified in another Vice Community server';
+            }
+
+            await sendStaffLog(guildId, {
+                color: LOG_COLORS.verifyAuto,
+                title: '✅ Auto-Verified',
+                description: `**${member.user.tag}** (<@${member.id}>) was auto-verified in ${guildLabel(guildId)} on join.`,
+                fields: [
+                    { name: 'Source', value: `Verified from ${verificationBasis}.` }
+                ]
+            });
 
             await maybeKickFromApplicationServer(member.user.id, guildId);
 
@@ -158,12 +213,46 @@ client.on('guildMemberAdd', async (member) => {
             }
         } else if (verificationSource.shouldVerify) {
             console.error(`Cannot auto-verify ${member.user.tag} in ${member.guild.name} - missing verified role or role hierarchy issue`);
+
+            await sendStaffLog(guildId, {
+                color: LOG_COLORS.error,
+                title: '⚠️ Auto-Verify Failed',
+                description: `**${member.user.tag}** (<@${member.id}>) should have been auto-verified in ${guildLabel(guildId)}, but the role could not be granted.`,
+                fields: [
+                    { name: 'Reason', value: 'The verified role is missing, or the bot\'s highest role sits below it.' }
+                ],
+                footer: 'Fix the role setup, then verify this member manually with !verify.'
+            });
         }
 
         // Independent of verification: carry any subscription tier over from the other main server.
         await syncTierRolesOnJoin(member);
     } catch (error) {
         console.error('Error in guildMemberAdd event:', error);
+    }
+});
+
+// Departures from the main servers. The Application Server is deliberately excluded:
+// the auto-kick log already covers those removals with more context.
+client.on('guildMemberRemove', async (member) => {
+    try {
+        const guildId = member.guild.id;
+        if (!isMainServer(guildId)) return;
+
+        const userTag = member.user ? member.user.tag : member.id;
+        console.log(`${userTag} left ${member.guild.name} (${guildId})`);
+
+        await sendStaffLog(guildId, {
+            color: LOG_COLORS.leave,
+            title: '📤 Member Left',
+            description: `**${userTag}** (<@${member.id}>) is no longer in ${guildLabel(guildId)}.`,
+            fields: [
+                { name: 'Member Count', value: `${member.guild.memberCount}`, inline: true }
+            ],
+            footer: 'Discord does not distinguish a voluntary leave from a kick or ban on this event.'
+        });
+    } catch (error) {
+        console.error('Error in guildMemberRemove event:', error);
     }
 });
 
@@ -422,6 +511,15 @@ client.on('messageCreate', async (message) => {
             message.reply(`✅ ${targetUser.user.tag} has been verified!`);
             console.log(`${message.author.tag} verified ${targetUser.user.tag} in ${message.guild.name} (${guildId})`);
 
+            await sendStaffLog(guildId, {
+                color: LOG_COLORS.verifyManual,
+                title: '✅ Manually Verified',
+                description: `**${targetUser.user.tag}** (<@${targetUser.id}>) was verified in ${guildLabel(guildId)}.`,
+                fields: [
+                    { name: 'Verified By', value: `**${message.author.tag}** (<@${message.author.id}>)` }
+                ]
+            });
+
             await maybeKickFromApplicationServer(targetUser.user.id, guildId);
             await autoVerifyInOtherServers(targetUser.user.id, guildId);
 
@@ -476,6 +574,15 @@ async function autoVerifyInOtherServers(userId, verifiedInGuildId) {
                     await member.roles.add(verifiedRole);
                     console.log(`Auto-verified ${member.user.tag} in ${guild.name} after manual verification`);
 
+                    await sendStaffLog(serverId, {
+                        color: LOG_COLORS.verifyAuto,
+                        title: '✅ Auto-Verified',
+                        description: `**${member.user.tag}** (<@${member.id}>) was auto-verified in ${guildLabel(serverId)}.`,
+                        fields: [
+                            { name: 'Source', value: `Manually verified on ${guildLabel(verifiedInGuildId)}.` }
+                        ]
+                    });
+
                     await maybeKickFromApplicationServer(userId, serverId);
                 }
             } catch (fetchError) {
@@ -521,8 +628,10 @@ function canManageRole(guild, roleId) {
     return role.position < botMember.roles.highest.position;
 }
 
-// Post to the server's bot log channel. Never throws: logging must not break the caller.
-async function sendStaffLog(guildId, message) {
+// Post an embed to the server's bot log channel, built from
+// { color, title, description?, fields?, footer? }.
+// Never throws: logging must not break the caller.
+async function sendStaffLog(guildId, options) {
     try {
         const channelId = LOG_CHANNELS[guildId];
         if (!channelId) return;
@@ -536,10 +645,33 @@ async function sendStaffLog(guildId, message) {
             return;
         }
 
-        await channel.send(message);
+        const embed = new EmbedBuilder()
+            .setColor(options.color)
+            .setTitle(options.title)
+            .setTimestamp();
+
+        if (options.description) {
+            embed.setDescription(options.description);
+        }
+
+        if (options.fields && options.fields.length > 0) {
+            embed.addFields(options.fields);
+        }
+
+        if (options.footer) {
+            embed.setFooter({ text: options.footer });
+        }
+
+        await channel.send({ embeds: [embed] });
     } catch (error) {
         console.error('Failed to send staff log message:', error);
     }
+}
+
+// Discord rejects empty embed field values, and truncates anything past 1024 chars.
+function errorField(error) {
+    const text = String(error && error.message ? error.message : error) || 'Unknown error';
+    return { name: 'Error', value: text.slice(0, 1000) };
 }
 
 function isMainServer(guildId) {
@@ -560,11 +692,13 @@ function guildLabel(guildId) {
 // Warn once at startup about config the new features depend on, so a missing
 // .env entry shows up in the PM2 log instead of silently disabling a feature.
 function warnAboutMissingConfig() {
-    for (const guildId of [VG_GUILD_ID, VC_GUILD_ID]) {
+    for (const guildId of [VG_GUILD_ID, VC_GUILD_ID, APP_GUILD_ID]) {
         if (!LOG_CHANNELS[guildId]) {
             console.warn(`No bot log channel configured for ${guildLabel(guildId)} - staff logs will be skipped.`);
         }
+    }
 
+    for (const guildId of [VG_GUILD_ID, VC_GUILD_ID]) {
         const tiers = SERVER_CONFIGS[guildId]?.tierRoleIds || {};
         const missing = TIER_ORDER.filter(tierName => !tiers[tierName]);
         if (missing.length > 0) {
@@ -600,14 +734,40 @@ async function maybeKickFromApplicationServer(userId, guildIdJustVerifiedIn) {
 
         if (!appMember.kickable) {
             console.error(`Cannot kick ${appMember.user.tag} from the Application Server - missing permission or role hierarchy issue`);
+
+            await sendStaffLog(APP_GUILD_ID, {
+                color: LOG_COLORS.error,
+                title: '⚠️ Auto-Kick Failed',
+                description: `**${appMember.user.tag}** (<@${appMember.id}>) could not be removed from the Application Server after being verified on ${guildLabel(guildIdJustVerifiedIn)}.`,
+                fields: [
+                    { name: 'Reason', value: 'Missing the Kick Members permission, or the bot\'s highest role sits below theirs.' }
+                ],
+                footer: 'Remove this member manually once the permission or role position is fixed.'
+            });
             return;
         }
 
         await appMember.kick('Verified in a main Vice Community server - application cycle complete');
         console.log(`Kicked ${appMember.user.tag} from Application Server after verification in ${guildLabel(guildIdJustVerifiedIn)}`);
-        await sendStaffLog(guildIdJustVerifiedIn, `Auto-kicked **${appMember.user.tag}** from the Application Server after verification here.`);
+
+        await sendStaffLog(APP_GUILD_ID, {
+            color: LOG_COLORS.kick,
+            title: '👢 Auto-Kicked from Application Server',
+            description: `**${appMember.user.tag}** (<@${appMember.id}>) was removed from the Application Server.`,
+            fields: [
+                { name: 'Reason', value: `Verified on ${guildLabel(guildIdJustVerifiedIn)} - application cycle complete.` }
+            ]
+        });
     } catch (error) {
         console.error(`Could not kick ${userId} from Application Server:`, error);
+
+        await sendStaffLog(APP_GUILD_ID, {
+            color: LOG_COLORS.error,
+            title: '⚠️ Auto-Kick Error',
+            description: `An error occurred while removing <@${userId}> from the Application Server after they were verified on ${guildLabel(guildIdJustVerifiedIn)}.`,
+            fields: [errorField(error)],
+            footer: 'Check whether this member is still on the Application Server.'
+        });
     }
 }
 
@@ -714,10 +874,26 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
 
         if (newTier) {
             console.log(`Synced tier ${newTier} to ${otherMember.user.tag} in ${otherGuild.name}`);
-            await sendStaffLog(otherGuildId, `Synced tier role **${newTier}** to **${otherMember.user.tag}** (granted on ${guildLabel(guildId)}).`);
+
+            await sendStaffLog(otherGuildId, {
+                color: LOG_COLORS.tierGrant,
+                title: '💎 Subscription Synced',
+                description: `**${otherMember.user.tag}** (<@${otherMember.id}>) was granted **${tierLabel(newTier)}** in ${guildLabel(otherGuildId)}.`,
+                fields: [
+                    { name: 'Source', value: `Tier granted on ${guildLabel(guildId)}.` }
+                ]
+            });
         } else {
             console.log(`Removed tier roles from ${otherMember.user.tag} in ${otherGuild.name}`);
-            await sendStaffLog(otherGuildId, `Removed tier role from **${otherMember.user.tag}** (subscription ended on ${guildLabel(guildId)}).`);
+
+            await sendStaffLog(otherGuildId, {
+                color: LOG_COLORS.tierRemove,
+                title: '💔 Subscription Removed',
+                description: `Tier roles were removed from **${otherMember.user.tag}** (<@${otherMember.id}>) in ${guildLabel(otherGuildId)}.`,
+                fields: [
+                    { name: 'Source', value: `Subscription ended on ${guildLabel(guildId)}.` }
+                ]
+            });
         }
     } catch (error) {
         console.error('Error in guildMemberUpdate event:', error);
@@ -744,7 +920,15 @@ async function syncTierRolesOnJoin(member) {
         if (!changed) return;
 
         console.log(`Granted tier ${tier} to ${member.user.tag} on join to ${member.guild.name}`);
-        await sendStaffLog(guildId, `Granted tier role **${tier}** to **${member.user.tag}** on join (already held on ${guildLabel(otherGuildId)}).`);
+
+        await sendStaffLog(guildId, {
+            color: LOG_COLORS.tierGrant,
+            title: '💎 Subscription Carried Over',
+            description: `**${member.user.tag}** (<@${member.id}>) was granted **${tierLabel(tier)}** in ${guildLabel(guildId)} on join.`,
+            fields: [
+                { name: 'Source', value: `Already held on ${guildLabel(otherGuildId)}.` }
+            ]
+        });
     } catch (error) {
         console.error('Error syncing tier roles on join:', error);
     }
@@ -774,10 +958,21 @@ async function runReconciliation() {
                 continue;
             }
 
-            const members = await guild.members.fetch().catch(error => {
+            let members = null;
+
+            try {
+                members = await guild.members.fetch();
+            } catch (error) {
                 console.error(`Failed to fetch members for ${guild.name}:`, error);
-                return null;
-            });
+
+                await sendStaffLog(serverId, {
+                    color: LOG_COLORS.error,
+                    title: '⚠️ Reconciliation Skipped',
+                    description: `Could not fetch the member list for ${guildLabel(serverId)}, so this reconciliation pass skipped that server.`,
+                    fields: [errorField(error)],
+                    footer: 'The next pass retries in an hour.'
+                });
+            }
 
             if (members) {
                 guildMembers.set(serverId, { guild, members });
@@ -807,11 +1002,28 @@ async function reconcileMissingRoles(guildMembers) {
         const verifiedRole = guild.roles.cache.get(config.verifiedRoleId);
         if (!verifiedRole) {
             console.error(`Verified role not found for server ${guildId}, skipping reconciliation`);
+
+            await sendStaffLog(guildId, {
+                color: LOG_COLORS.error,
+                title: '⚠️ Reconciliation Skipped',
+                description: `The verified role configured for ${guildLabel(guildId)} no longer exists, so missing-role reconciliation was skipped.`,
+                footer: 'Check the verified role ID in the bot config.'
+            });
             continue;
         }
 
         if (!canManageRole(guild, config.verifiedRoleId)) {
             console.error(`Cannot assign the verified role in ${guild.name} - role hierarchy issue`);
+
+            await sendStaffLog(guildId, {
+                color: LOG_COLORS.error,
+                title: '⚠️ Reconciliation Skipped',
+                description: `The bot cannot assign the verified role in ${guildLabel(guildId)}, so missing-role reconciliation was skipped.`,
+                fields: [
+                    { name: 'Reason', value: 'The bot\'s highest role sits below the verified role.' }
+                ],
+                footer: 'Move the bot\'s role above the verified role in server settings.'
+            });
             continue;
         }
 
@@ -832,7 +1044,15 @@ async function reconcileMissingRoles(guildMembers) {
             }
 
             console.log(`Reconciliation: corrected missing role for ${member.user.tag} in ${guild.name}`);
-            await sendStaffLog(guildId, `Reconciliation: corrected missing verified role for **${member.user.tag}**.`);
+
+            await sendStaffLog(guildId, {
+                color: LOG_COLORS.reconciliation,
+                title: '🔄 Reconciliation: Verified Role Corrected',
+                description: `**${member.user.tag}** (<@${member.id}>) was missing the verified role in ${guildLabel(guildId)} and has now been granted it.`,
+                fields: [
+                    { name: 'Reason', value: 'Already verified in another Vice Community server.' }
+                ]
+            });
 
             // Catches Feature A cases the live handlers missed.
             await maybeKickFromApplicationServer(member.id, guildId);
@@ -876,20 +1096,46 @@ async function reconcileTierRoles(guildMembers) {
         if (vgTier && !vcTier) {
             if (await applyTier(vcMember, vcTiers, vgTier)) {
                 console.log(`Reconciliation: synced tier ${vgTier} to ${vcMember.user.tag} in Vice Creators`);
-                await sendStaffLog(VC_GUILD_ID, `Reconciliation: synced tier **${vgTier}** to **${vcMember.user.tag}** from Vice Gamers.`);
+
+                await sendStaffLog(VC_GUILD_ID, {
+                    color: LOG_COLORS.reconciliation,
+                    title: '🔄 Reconciliation: Subscription Synced',
+                    description: `**${vcMember.user.tag}** (<@${vcMember.id}>) was granted **${tierLabel(vgTier)}** in Vice Creators.`,
+                    fields: [
+                        { name: 'Source', value: 'Already held on Vice Gamers.' }
+                    ]
+                });
             }
         } else if (vcTier && !vgTier) {
             if (await applyTier(vgMember, vgTiers, vcTier)) {
                 console.log(`Reconciliation: synced tier ${vcTier} to ${vgMember.user.tag} in Vice Gamers`);
-                await sendStaffLog(VG_GUILD_ID, `Reconciliation: synced tier **${vcTier}** to **${vgMember.user.tag}** from Vice Creators.`);
+
+                await sendStaffLog(VG_GUILD_ID, {
+                    color: LOG_COLORS.reconciliation,
+                    title: '🔄 Reconciliation: Subscription Synced',
+                    description: `**${vgMember.user.tag}** (<@${vgMember.id}>) was granted **${tierLabel(vcTier)}** in Vice Gamers.`,
+                    fields: [
+                        { name: 'Source', value: 'Already held on Vice Creators.' }
+                    ]
+                });
             }
         } else {
             // Both sides have a tier and they disagree. Never auto-corrected:
             // guessing either upgrades someone for free or downgrades a paying member.
-            const msg = `⚠️ Tier mismatch for **${vgMember.user.tag}**: **${vgTier}** on Vice Gamers vs **${vcTier}** on Vice Creators. Needs manual review, not auto-corrected.`;
+            const mismatchLog = {
+                color: LOG_COLORS.mismatch,
+                title: '⚠️ Subscription Mismatch',
+                description: `**${vgMember.user.tag}** (<@${vgMember.id}>) holds a different tier on each main server. Nothing was changed - this needs manual review.`,
+                fields: [
+                    { name: 'Vice Gamers', value: tierLabel(vgTier), inline: true },
+                    { name: 'Vice Creators', value: tierLabel(vcTier), inline: true }
+                ],
+                footer: 'Auto-correcting would either upgrade someone for free or downgrade a paying member.'
+            };
+
             console.warn(`Tier mismatch for ${vgMember.user.tag}: ${vgTier} (VG) vs ${vcTier} (VC)`);
-            await sendStaffLog(VG_GUILD_ID, msg);
-            await sendStaffLog(VC_GUILD_ID, msg);
+            await sendStaffLog(VG_GUILD_ID, mismatchLog);
+            await sendStaffLog(VC_GUILD_ID, mismatchLog);
         }
     }
 }

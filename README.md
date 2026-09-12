@@ -145,6 +145,7 @@ VC_TIER_SUPER_VICER=
 # Bot log channels
 VG_LOG_CHANNEL=
 VC_LOG_CHANNEL=
+APP_LOG_CHANNEL=
 
 # Reference only, not read by the reconciliation logic
 VG_WAITING_ROOM_CHANNEL=
@@ -193,6 +194,33 @@ Every hour (and once at startup) the bot sweeps both main servers to catch anyth
 - Tier roles are compared across both servers and synced or flagged as above.
 
 Bots, staff, and server owners are skipped. Every correction posts to the server's bot log channel.
+
+### Staff Activity Log
+
+Each of the three servers has its own bot log channel (`VG_LOG_CHANNEL`, `VC_LOG_CHANNEL`, `APP_LOG_CHANNEL`). Member lifecycle events are posted there as color-coded embeds so staff can scan a channel at a glance:
+
+| Color | Events |
+|---|---|
+| Blurple | Member joined |
+| Green | Auto-verified, manually verified |
+| Orange | Auto-kicked from the Application Server |
+| Grey | Member left a main server |
+| Pink | Subscription tier granted or synced |
+| Dark red | Subscription tier removed |
+| Yellow | Tier mismatch needing manual review |
+| Red | Operational problems (failed verification, failed kick, skipped reconciliation) |
+
+Reconciliation entries reuse the join color and are marked with a 🔄 in the title.
+
+Notes on coverage:
+
+- Application Server activity — joins, auto-kicks, and kick failures — goes to `APP_LOG_CHANNEL`, not to the main server the member was verified in.
+- Departures are logged for the main servers only. The Application Server is skipped because the auto-kick entry already covers that removal with more context.
+- Discord's departure event does not distinguish a voluntary leave from a kick or a ban, so the log does not claim to either.
+- Failed welcome DMs (a member with DMs closed) stay console-only. They are common and would be noise.
+- A reconciliation pass that finds nothing to correct posts nothing.
+
+Logging never interrupts the action that triggered it: if a log channel is missing or misconfigured, the bot writes a console warning and carries on.
 
 ---
 
