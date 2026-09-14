@@ -2,6 +2,9 @@
 node_modules/
 .idea/
 
+# Runtime state, not source
+application-server-state.json
+
 # Optional local files
 .DS_Store
 *.log

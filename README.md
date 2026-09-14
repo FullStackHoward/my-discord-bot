@@ -131,8 +131,12 @@ VC_STAFF_USER_2=
 # Application Server
 APP_GUILD_ID=
 APP_VERIFIED_ROLE=
+APP_PENDING_ROLE=
+APP_DENIED_ROLE=
 APP_STAFF_ROLE_1=
 APP_STAFF_USER_1=
+APP_CHAT=
+APP_SUBMIT_CHANNEL=
 
 # Subscription tier roles (Vicer+, Vicer++, Super Vicer)
 VG_TIER_VICER_PLUS=
@@ -176,6 +180,31 @@ Make sure the bot has `Send Messages` and `Read Message History` permission in e
 ### Application Server Auto-Kick
 
 Once a member is verified in Vice Gamers or Vice Creators, the bot removes them from the Application Server if they still hold the accepted role there. Staff and the server owner are never kicked. If the member already left, or the bot lacks the permission or role position to kick them, the attempt is logged and skipped.
+
+### Application Server Lifecycle Sweep
+
+A third-party bot, **Appy**, owns the application flow on the Application Server. As staff review each application, Appy assigns the applicant one of three roles — Pending, Accepted, or Denied — and DMs accepted applicants an invite link to whichever main server they applied to.
+
+Every hour (and once at startup) this bot sweeps the Application Server and acts on those roles:
+
+| State | Action |
+|---|---|
+| **Denied** | Removed immediately, no grace period. |
+| **Accepted**, already in Vice Gamers or Vice Creators | Nothing. The auto-kick above already handles them. |
+| **Accepted**, in neither main server | Reminded once in `#application-chat` to check their DMs for the invite. Removed if they still haven't joined 24 hours later. |
+| **Pending** | Nothing. Their application is mid-review. |
+| **No application role**, joined over 8 hours ago | Reminded once in `#application-chat` to start an application. Removed if they still haven't applied 24 hours later. |
+
+Bots, staff, and the server owner are excluded from all of it. Each member gets one reminder per condition, never a second, and reminders are posted in the channel — the bot never DMs as part of this. Every reminder and removal posts to `APP_LOG_CHANNEL`.
+
+The bot does not track *which* main server an accepted applicant was invited to. Appy already sent the right link; this bot only checks whether they joined either one.
+
+Reminder timestamps are stored in `application-server-state.json` next to `index.js`, so the 24-hour clocks survive a restart or deploy instead of resetting. The file is created on first write, pruned each sweep of anyone who has left, and is not committed to version control.
+
+Two config notes:
+
+- If `APP_PENDING_ROLE` or `APP_DENIED_ROLE` is unset, the bot cannot tell an applicant under review apart from someone who never applied, so the apply reminder and its removal are disabled rather than risk removing people mid-review. Denied removals and the accepted/join track are unaffected.
+- If `APP_CHAT` is unset or the channel is unreachable, no reminders are sent, and because nobody can be removed without first being reminded, only the Denied removals still run. Both cases warn at startup.
 
 ### Subscription Tier Sync
 
@@ -257,6 +286,7 @@ When inviting the bot to a server, the following permissions are required:
 vice-community-bot/
 ├── index.js        # Main bot file
 ├── .env            # Environment variables (never committed)
+├── application-server-state.json   # Runtime reminder state (never committed)
 ├── .gitignore
 ├── package.json
 └── README.md
