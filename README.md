@@ -274,6 +274,7 @@ When inviting the bot to a server, the following permissions are required:
 - Manage Roles
 - View Channels
 - Send Messages
+- Embed Links (required in every log channel — all staff logs are embeds)
 - Read Message History
 - Manage Events (required for planned event sync feature)
 - Kick Members (required on the Application Server for the auto-kick)
