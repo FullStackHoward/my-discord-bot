@@ -130,6 +130,16 @@ const APP_SUBMIT_CHANNEL_ID = process.env.APP_SUBMIT_CHANNEL;
 const RECONCILIATION_INTERVAL_MS = 60 * 60 * 1000;
 const APPLICATION_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 
+// Offset from the reconciliation pass so the two hourly jobs never request the full
+// Application Server member list at the same instant.
+const APPLICATION_SWEEP_START_DELAY_MS = 5 * 60 * 1000;
+
+// A full member fetch is a fire-and-forget gateway request: if the shard is
+// reconnecting when it goes out, no chunks come back and discord.js gives up after
+// 120s of silence. One retry turns that transient failure into a non-event.
+const MEMBER_FETCH_ATTEMPTS = 2;
+const MEMBER_FETCH_RETRY_MS = 15 * 1000;
+
 // How long someone may sit in the Application Server without starting an application
 // before they are reminded, and how long any reminder stands before they are removed.
 const APPLY_NUDGE_DELAY_MS = 8 * 60 * 60 * 1000;
@@ -162,10 +172,12 @@ client.once('ready', () => {
         void runReconciliation();
     }, RECONCILIATION_INTERVAL_MS);
 
-    void runApplicationSweep();
-    setInterval(() => {
+    setTimeout(() => {
         void runApplicationSweep();
-    }, APPLICATION_SWEEP_INTERVAL_MS);
+        setInterval(() => {
+            void runApplicationSweep();
+        }, APPLICATION_SWEEP_INTERVAL_MS);
+    }, APPLICATION_SWEEP_START_DELAY_MS);
 });
 
 // Handle member joining a server
@@ -669,6 +681,31 @@ async function resolveGuild(guildId) {
     return client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
 }
 
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Full guild member fetch with a retry. Throws the last error if every attempt fails,
+// so callers keep their existing "skip this guild and log it" handling.
+async function fetchAllMembers(guild) {
+    let lastError;
+
+    for (let attempt = 1; attempt <= MEMBER_FETCH_ATTEMPTS; attempt++) {
+        try {
+            return await guild.members.fetch();
+        } catch (error) {
+            lastError = error;
+            console.warn(`Member fetch for ${guild.name} failed (attempt ${attempt}/${MEMBER_FETCH_ATTEMPTS}): ${error.message}`);
+
+            if (attempt < MEMBER_FETCH_ATTEMPTS) {
+                await sleep(MEMBER_FETCH_RETRY_MS);
+            }
+        }
+    }
+
+    throw lastError;
+}
+
 // True when the bot's highest role sits above the target role, i.e. it can grant/revoke it.
 function canManageRole(guild, roleId) {
     if (!roleId) return false;
@@ -1080,7 +1117,7 @@ async function runReconciliation() {
             let members = null;
 
             try {
-                members = await guild.members.fetch();
+                members = await fetchAllMembers(guild);
             } catch (error) {
                 console.error(`Failed to fetch members for ${guild.name}:`, error);
 
@@ -1371,7 +1408,7 @@ async function runApplicationSweep() {
         let members;
 
         try {
-            members = await appGuild.members.fetch();
+            members = await fetchAllMembers(appGuild);
         } catch (error) {
             console.error('Failed to fetch Application Server members:', error);
 
