@@ -90,7 +90,6 @@ const LOG_COLORS = {
     verifyAuto: 0x57F287,
     verifyManual: 0x57F287,
     kick: 0xE67E22,
-    leave: 0x99AAB5,
     tierGrant: 0xEB459E,
     tierRemove: 0x992D22,
     mismatch: 0xFEE75C,
@@ -142,8 +141,10 @@ client.once('ready', () => {
 
 // Handle member joining a server
 client.on('guildMemberAdd', async (member) => {
+    // Hoisted out of the try so the catch below knows which log channel to use.
+    const guildId = member.guild.id;
+
     try {
-        const guildId = member.guild.id;
         const serverConfig = SERVER_CONFIGS[guildId];
 
         if (!serverConfig) {
@@ -229,30 +230,14 @@ client.on('guildMemberAdd', async (member) => {
         await syncTierRolesOnJoin(member);
     } catch (error) {
         console.error('Error in guildMemberAdd event:', error);
-    }
-});
-
-// Departures from the main servers. The Application Server is deliberately excluded:
-// the auto-kick log already covers those removals with more context.
-client.on('guildMemberRemove', async (member) => {
-    try {
-        const guildId = member.guild.id;
-        if (!isMainServer(guildId)) return;
-
-        const userTag = member.user ? member.user.tag : member.id;
-        console.log(`${userTag} left ${member.guild.name} (${guildId})`);
 
         await sendStaffLog(guildId, {
-            color: LOG_COLORS.leave,
-            title: '📤 Member Left',
-            description: `**${userTag}** (<@${member.id}>) is no longer in ${guildLabel(guildId)}.`,
-            fields: [
-                { name: 'Member Count', value: `${member.guild.memberCount}`, inline: true }
-            ],
-            footer: 'Discord does not distinguish a voluntary leave from a kick or ban on this event.'
+            color: LOG_COLORS.error,
+            title: '⚠️ Join Handler Failed',
+            description: `Something went wrong while processing **${member.user.tag}** (<@${member.id}>) joining ${guildLabel(guildId)}. They may not have been verified or given their tier roles.`,
+            fields: [errorField(error)],
+            footer: 'The hourly reconciliation pass will retry anything that was missed.'
         });
-    } catch (error) {
-        console.error('Error in guildMemberRemove event:', error);
     }
 });
 
@@ -300,6 +285,15 @@ async function checkAutoVerificationSource(userId, joinedGuildId) {
         };
     } catch (error) {
         console.error('Error checking auto-verification:', error);
+
+        await sendStaffLog(joinedGuildId, {
+            color: LOG_COLORS.error,
+            title: '⚠️ Verification Check Failed',
+            description: `Could not work out whether <@${userId}> should be auto-verified in ${guildLabel(joinedGuildId)}, so they were left unverified.`,
+            fields: [errorField(error)],
+            footer: 'The hourly reconciliation pass will retry.'
+        });
+
         return { shouldVerify: false, fromServer3: false, fromOtherMainServer: false };
     }
 }
@@ -354,6 +348,14 @@ async function syncEventChannels() {
                 await syncEventChannel(guildId, channelId);
             } catch (error) {
                 console.error(`Error syncing events for guild ${guildId}:`, error);
+
+                await sendStaffLog(guildId, {
+                    color: LOG_COLORS.error,
+                    title: '⚠️ Event Sync Failed',
+                    description: `The scheduled-event sync for ${guildLabel(guildId)} did not finish, so the events channel may be out of date.`,
+                    fields: [errorField(error)],
+                    footer: 'The next sync runs in 15 minutes.'
+                });
             }
         }));
     } finally {
@@ -375,15 +377,33 @@ async function syncEventChannel(guildId, channelId) {
     const channel = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId).catch(() => null);
     if (!channel || !channel.isTextBased()) {
         console.log(`Events channel not found or not text-based for guild ${guildId}: ${channelId}`);
+
+        await sendStaffLog(guildId, {
+            color: LOG_COLORS.error,
+            title: '⚠️ Events Channel Misconfigured',
+            description: `The events channel configured for ${guildLabel(guildId)} is missing, not visible to the bot, or not a text channel.`,
+            fields: [
+                { name: 'Configured Channel ID', value: `${channelId}` }
+            ],
+            footer: 'Scheduled events are not being mirrored until this is fixed.'
+        });
         return;
     }
 
-    const scheduledEvents = await guild.scheduledEvents.fetch().catch(error => {
-        console.error(`Failed to fetch scheduled events for ${guild.name}:`, error);
-        return null;
-    });
+    let scheduledEvents;
 
-    if (!scheduledEvents) {
+    try {
+        scheduledEvents = await guild.scheduledEvents.fetch();
+    } catch (error) {
+        console.error(`Failed to fetch scheduled events for ${guild.name}:`, error);
+
+        await sendStaffLog(guildId, {
+            color: LOG_COLORS.error,
+            title: '⚠️ Event Fetch Failed',
+            description: `Could not fetch the scheduled events for ${guildLabel(guildId)}, so the events channel was left untouched this pass.`,
+            fields: [errorField(error)],
+            footer: 'The next sync runs in 15 minutes.'
+        });
         return;
     }
 
@@ -412,6 +432,14 @@ async function syncEventChannel(guildId, channelId) {
                 await channel.send(`https://discord.com/events/${guildId}/${scheduledEvent.id}`);
             } catch (error) {
                 console.error(`Failed to post event ${scheduledEvent.id} in ${guild.name}:`, error);
+
+                await sendStaffLog(guildId, {
+                    color: LOG_COLORS.error,
+                    title: '⚠️ Event Post Failed',
+                    description: `Could not post the event **${scheduledEvent.name}** to the events channel in ${guildLabel(guildId)}.`,
+                    fields: [errorField(error)],
+                    footer: 'Check the bot\'s Send Messages permission in that channel.'
+                });
             }
         }
     }
@@ -668,6 +696,14 @@ async function sendStaffLog(guildId, options) {
     }
 }
 
+// For problems that aren't tied to one server. Best effort: sendStaffLog already
+// swallows a channel that is missing or unreachable.
+async function sendStaffLogToAllServers(options) {
+    for (const guildId of [VG_GUILD_ID, VC_GUILD_ID, APP_GUILD_ID]) {
+        await sendStaffLog(guildId, options);
+    }
+}
+
 // Discord rejects empty embed field values, and truncates anything past 1024 chars.
 function errorField(error) {
     const text = String(error && error.message ? error.message : error) || 'Unknown error';
@@ -820,6 +856,16 @@ async function applyTier(member, tierRoleIds, desiredTier) {
 
         if (removable.length !== toRemove.length) {
             console.error(`Cannot remove some tier roles from ${member.user.tag} in ${guild.name} - role hierarchy issue`);
+
+            await sendStaffLog(guild.id, {
+                color: LOG_COLORS.error,
+                title: '⚠️ Tier Role Removal Blocked',
+                description: `Some tier roles could not be removed from **${member.user.tag}** (<@${member.id}>) in ${guildLabel(guild.id)}, so their tiers are out of sync.`,
+                fields: [
+                    { name: 'Reason', value: 'The bot\'s highest role sits below one or more tier roles.' }
+                ],
+                footer: 'Move the bot\'s role above the tier roles in server settings.'
+            });
         }
 
         if (removable.length > 0) {
@@ -828,6 +874,14 @@ async function applyTier(member, tierRoleIds, desiredTier) {
                 changed = true;
             } catch (error) {
                 console.error(`Failed to remove tier roles from ${member.user.tag} in ${guild.name}:`, error);
+
+                await sendStaffLog(guild.id, {
+                    color: LOG_COLORS.error,
+                    title: '⚠️ Tier Role Removal Failed',
+                    description: `Could not remove tier roles from **${member.user.tag}** (<@${member.id}>) in ${guildLabel(guild.id)}, so their tiers are out of sync.`,
+                    fields: [errorField(error)],
+                    footer: 'The hourly reconciliation pass will retry.'
+                });
             }
         }
     }
@@ -835,12 +889,30 @@ async function applyTier(member, tierRoleIds, desiredTier) {
     if (toAdd) {
         if (!canManageRole(guild, toAdd)) {
             console.error(`Cannot assign tier role to ${member.user.tag} in ${guild.name} - role hierarchy issue`);
+
+            await sendStaffLog(guild.id, {
+                color: LOG_COLORS.error,
+                title: '⚠️ Tier Role Grant Blocked',
+                description: `Could not grant **${tierLabel(desiredTier)}** to **${member.user.tag}** (<@${member.id}>) in ${guildLabel(guild.id)}.`,
+                fields: [
+                    { name: 'Reason', value: 'The bot\'s highest role sits below that tier role.' }
+                ],
+                footer: 'Move the bot\'s role above the tier roles in server settings.'
+            });
         } else {
             try {
                 await member.roles.add(toAdd, 'Cross-server tier sync');
                 changed = true;
             } catch (error) {
                 console.error(`Failed to add tier role to ${member.user.tag} in ${guild.name}:`, error);
+
+                await sendStaffLog(guild.id, {
+                    color: LOG_COLORS.error,
+                    title: '⚠️ Tier Role Grant Failed',
+                    description: `Could not grant **${tierLabel(desiredTier)}** to **${member.user.tag}** (<@${member.id}>) in ${guildLabel(guild.id)}.`,
+                    fields: [errorField(error)],
+                    footer: 'The hourly reconciliation pass will retry.'
+                });
             }
         }
     }
@@ -983,6 +1055,14 @@ async function runReconciliation() {
         await reconcileTierRoles(guildMembers);
     } catch (error) {
         console.error('Error during reconciliation sweep:', error);
+
+        await sendStaffLogToAllServers({
+            color: LOG_COLORS.error,
+            title: '⚠️ Reconciliation Sweep Failed',
+            description: 'The reconciliation sweep stopped early, so some corrections may have been missed across the servers.',
+            fields: [errorField(error)],
+            footer: 'The next pass retries in an hour.'
+        });
     } finally {
         reconciliationRunning = false;
     }
@@ -1040,6 +1120,14 @@ async function reconcileMissingRoles(guildMembers) {
                 await member.roles.add(verifiedRole, 'Reconciliation: verified in another Vice Community server');
             } catch (error) {
                 console.error(`Reconciliation grant failed for ${member.user.tag}:`, error);
+
+                await sendStaffLog(guildId, {
+                    color: LOG_COLORS.error,
+                    title: '⚠️ Reconciliation Grant Failed',
+                    description: `**${member.user.tag}** (<@${member.id}>) is verified elsewhere but the verified role could not be granted to them in ${guildLabel(guildId)}.`,
+                    fields: [errorField(error)],
+                    footer: 'The next pass retries in an hour.'
+                });
                 continue;
             }
 
@@ -1143,10 +1231,26 @@ async function reconcileTierRoles(guildMembers) {
 // Error handling
 client.on('error', error => {
     console.error('Client error:', error);
+
+    void sendStaffLogToAllServers({
+        color: LOG_COLORS.error,
+        title: '⚠️ Bot Client Error',
+        description: 'The bot reported a Discord client error and may have briefly lost its connection.',
+        fields: [errorField(error)],
+        footer: 'If this repeats, check the PM2 log on the server.'
+    });
 });
 
 process.on('unhandledRejection', error => {
     console.error('Unhandled promise rejection:', error);
+
+    void sendStaffLogToAllServers({
+        color: LOG_COLORS.error,
+        title: '⚠️ Unhandled Error',
+        description: 'The bot hit an unhandled error. Whatever action triggered it may not have completed.',
+        fields: [errorField(error)],
+        footer: 'If this repeats, check the PM2 log on the server.'
+    });
 });
 
 // Login to Discord

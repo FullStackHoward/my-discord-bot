@@ -204,21 +204,29 @@ Each of the three servers has its own bot log channel (`VG_LOG_CHANNEL`, `VC_LOG
 | Blurple | Member joined |
 | Green | Auto-verified, manually verified |
 | Orange | Auto-kicked from the Application Server |
-| Grey | Member left a main server |
 | Pink | Subscription tier granted or synced |
 | Dark red | Subscription tier removed |
 | Yellow | Tier mismatch needing manual review |
-| Red | Operational problems (failed verification, failed kick, skipped reconciliation) |
+| Red | Operational problems staff need to act on |
 
 Reconciliation entries reuse the join color and are marked with a 🔄 in the title.
+
+Red entries cover anything that silently failed: a verification or auto-kick the bot could not carry out, a tier role it could not grant or remove, a misconfigured events channel, a reconciliation pass that was skipped or crashed, and any unhandled error. Problems that aren't specific to one server — a client error, an unhandled rejection, a reconciliation sweep that crashed — are posted to all three channels. Most red entries name the cause (usually a missing permission or the bot's role sitting too low) so the fix is visible without opening the PM2 log.
 
 Notes on coverage:
 
 - Application Server activity — joins, auto-kicks, and kick failures — goes to `APP_LOG_CHANNEL`, not to the main server the member was verified in.
-- Departures are logged for the main servers only. The Application Server is skipped because the auto-kick entry already covers that removal with more context.
-- Discord's departure event does not distinguish a voluntary leave from a kick or a ban, so the log does not claim to either.
-- Failed welcome DMs (a member with DMs closed) stay console-only. They are common and would be noise.
+- Members leaving a server are **not** logged, in any of the three servers.
 - A reconciliation pass that finds nothing to correct posts nothing.
+
+Deliberately console-only, to keep the channels scannable:
+
+- Failed welcome DMs (a member with DMs closed) — common, and not actionable.
+- A guild the bot cannot resolve at all — the log channel lookup would fail the same way.
+- A member joining a server with no config entry — there is no log channel to post to.
+- Per-check tracing inside the verification lookup — fires on every join across all three servers.
+- A failed cleanup of an expired event post, and a reconciliation pass skipped because one is already running.
+- `!verify` and `!announce` failures — these already reply in the channel where the command was run.
 
 Logging never interrupts the action that triggered it: if a log channel is missing or misconfigured, the bot writes a console warning and carries on.
 
