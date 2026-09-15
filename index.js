@@ -1323,6 +1323,7 @@ async function runReconciliation() {
 
         await reconcileMissingRoles(guildMembers);
         await reconcileTierRoles(guildMembers);
+        await reconcileStaleApplicationServerMembers(guildMembers);
     } catch (error) {
         console.error('Error during reconciliation sweep:', error);
 
@@ -1494,6 +1495,38 @@ async function reconcileTierRoles(guildMembers) {
             console.warn(`Tier mismatch for ${vgMember.user.tag}: ${vgTier} (VG) vs ${vcTier} (VC)`);
             await sendStaffLog(VG_GUILD_ID, mismatchLog);
             await sendStaffLog(VC_GUILD_ID, mismatchLog);
+        }
+    }
+}
+
+// Anyone still sitting in the Application Server, holding the Accepted role,
+// who is ALREADY verified in Vice Gamers or Vice Creators. reconcileMissingRoles
+// doesn't catch this case: it only grants roles that are missing, so it has no
+// reason to look at someone who's already fully verified elsewhere. This is
+// the only thing that catches it after the fact if the live kick in
+// maybeKickFromApplicationServer ever fails, gets skipped, or never had a
+// reason to fire in the first place.
+async function reconcileStaleApplicationServerMembers(guildMembers) {
+    const appConfig = SERVER_CONFIGS[APP_GUILD_ID];
+    const appEntry = guildMembers.get(APP_GUILD_ID);
+    if (!appConfig || !appConfig.verifiedRoleId || !appEntry) return;
+
+    for (const appMember of appEntry.members.values()) {
+        if (appMember.user.bot) continue;
+        if (appMember.id === appEntry.guild.ownerId) continue;
+        if (hasStaffPermission(appMember, appMember.id, appConfig)) continue;
+        if (!appMember.roles.cache.has(appConfig.verifiedRoleId)) continue;
+
+        for (const mainGuildId of [VG_GUILD_ID, VC_GUILD_ID]) {
+            const mainEntry = guildMembers.get(mainGuildId);
+            if (!mainEntry) continue;
+
+            const mainMember = mainEntry.members.get(appMember.id);
+            if (mainMember && mainMember.roles.cache.has(SERVER_CONFIGS[mainGuildId].verifiedRoleId)) {
+                console.log(`Reconciliation: found stale Application Server membership for ${appMember.user.tag}, already verified on ${guildLabel(mainGuildId)}`);
+                await maybeKickFromApplicationServer(appMember.id, mainGuildId);
+                break;
+            }
         }
     }
 }
