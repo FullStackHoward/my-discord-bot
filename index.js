@@ -3,7 +3,7 @@ require('dotenv').config();
 const fs = require('fs');
 const https = require('https');
 const path = require('path');
-const { Client, EmbedBuilder, GatewayIntentBits, GuildScheduledEventStatus } = require('discord.js');
+const { ApplicationCommandOptionType, Client, EmbedBuilder, GatewayIntentBits, GuildScheduledEventStatus, MessageFlags } = require('discord.js');
 
 // Create a new client instance
 const client = new Client({
@@ -161,6 +161,8 @@ client.once('ready', () => {
 
     warnAboutMissingConfig();
     loadApplicationState();
+
+    void registerSlashCommands();
 
     void syncEventChannels();
     setInterval(() => {
@@ -624,6 +626,190 @@ client.on('messageCreate', async (message) => {
         }
     }
 });
+
+// ---------------------------------------------------------------------------
+// Slash commands
+// ---------------------------------------------------------------------------
+
+// These run alongside the !verify / !announce prefix handlers above. The two systems
+// are independent, so the old commands stay live until the slash versions are
+// confirmed working in production.
+const SLASH_COMMANDS = [
+    {
+        name: 'verify',
+        description: 'Manually verify a member in this server',
+        options: [
+            {
+                name: 'user',
+                description: 'The member to verify',
+                type: ApplicationCommandOptionType.User,
+                required: true
+            }
+        ]
+    },
+    {
+        name: 'announce',
+        description: 'Post an announcement to the Vicers community site',
+        options: [
+            {
+                name: 'title',
+                description: 'Announcement title',
+                type: ApplicationCommandOptionType.String,
+                required: true
+            },
+            {
+                name: 'content',
+                description: 'Announcement body',
+                type: ApplicationCommandOptionType.String,
+                required: true
+            },
+            {
+                name: 'link',
+                description: 'Optional link to include with the announcement',
+                type: ApplicationCommandOptionType.String,
+                required: false
+            }
+        ]
+    }
+];
+
+// Guild-scoped rather than global: guild commands appear instantly and only show up
+// in our three servers. Re-registering an identical definition is a no-op on Discord's
+// side, so running this on every startup needs no separate deploy step.
+async function registerSlashCommands() {
+    for (const guildId of [VG_GUILD_ID, VC_GUILD_ID, APP_GUILD_ID]) {
+        if (!guildId) continue;
+
+        try {
+            await client.application.commands.set(SLASH_COMMANDS, guildId);
+            console.log(`Registered ${SLASH_COMMANDS.length} slash command(s) in ${guildLabel(guildId)}`);
+        } catch (error) {
+            // A bot invited without the applications.commands scope fails here. The bot
+            // keeps running and the !verify / !announce prefix commands still work.
+            console.error(`Failed to register slash commands in ${guildLabel(guildId)}:`, error);
+
+            void sendStaffLog(guildId, {
+                color: LOG_COLORS.error,
+                title: '⚠️ Slash Command Registration Failed',
+                description: `Slash commands could not be registered in ${guildLabel(guildId)}.`,
+                fields: [errorField(error)],
+                footer: 'Check that the bot was invited with the applications.commands scope.'
+            });
+        }
+    }
+}
+
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isChatInputCommand()) return;
+
+    try {
+        if (interaction.commandName === 'verify') {
+            await handleVerifyCommand(interaction);
+        } else if (interaction.commandName === 'announce') {
+            await handleAnnounceCommand(interaction);
+        }
+    } catch (error) {
+        // Safety net for anything the handlers below don't catch themselves, e.g. the
+        // interaction expiring before we could respond to it at all.
+        console.error(`Error handling /${interaction.commandName}:`, error);
+    }
+});
+
+// Slash-command form of !verify. Same checks, same order, same downstream calls.
+async function handleVerifyCommand(interaction) {
+    try {
+        const guildId = interaction.guildId;
+        const serverConfig = SERVER_CONFIGS[guildId];
+
+        if (!serverConfig) {
+            return interaction.reply({ content: '❌ This bot is not configured for this server.', flags: MessageFlags.Ephemeral });
+        }
+
+        if (!hasStaffPermission(interaction.member, interaction.user.id, serverConfig)) {
+            return interaction.reply({ content: '❌ You don\'t have permission to verify users.', flags: MessageFlags.Ephemeral });
+        }
+
+        // Unlike a mention, the user option can resolve someone who isn't in this server.
+        const targetUser = interaction.options.getMember('user');
+        if (!targetUser) {
+            return interaction.reply({ content: '❌ That user is not a member of this server.', flags: MessageFlags.Ephemeral });
+        }
+
+        const verifiedRole = interaction.guild.roles.cache.get(serverConfig.verifiedRoleId);
+        if (!verifiedRole) {
+            return interaction.reply({ content: '❌ Verified role not found. Please check the role ID configuration for this server.', flags: MessageFlags.Ephemeral });
+        }
+
+        if (!canManageRole(interaction.guild, serverConfig.verifiedRoleId)) {
+            return interaction.reply({ content: '❌ I cannot assign this role. My role must be positioned above the verified role in server settings.', flags: MessageFlags.Ephemeral });
+        }
+
+        if (targetUser.roles.cache.has(serverConfig.verifiedRoleId)) {
+            return interaction.reply({ content: `❌ ${targetUser.user.tag} is already verified.`, flags: MessageFlags.Ephemeral });
+        }
+
+        await targetUser.roles.add(verifiedRole);
+        // Public, like the old message.reply, so the rest of staff sees the action.
+        await interaction.reply(`✅ ${targetUser.user.tag} has been verified!`);
+        console.log(`${interaction.user.tag} verified ${targetUser.user.tag} in ${interaction.guild.name} (${guildId})`);
+
+        await sendStaffLog(guildId, {
+            color: LOG_COLORS.verifyManual,
+            title: '✅ Manually Verified',
+            description: `**${targetUser.user.tag}** (<@${targetUser.id}>) was verified in ${guildLabel(guildId)}.`,
+            fields: [
+                { name: 'Verified By', value: `**${interaction.user.tag}** (<@${interaction.user.id}>)` }
+            ]
+        });
+
+        await maybeKickFromApplicationServer(targetUser.user.id, guildId);
+        await autoVerifyInOtherServers(targetUser.user.id, guildId);
+
+    } catch (error) {
+        console.error('Error during verification:', error);
+        await respondWithError(interaction, '❌ An error occurred while verifying the user. Please check bot permissions.');
+    }
+}
+
+// Slash-command form of !announce. postAnnouncement is untouched and still just
+// receives the same three strings.
+async function handleAnnounceCommand(interaction) {
+    if (interaction.user.id !== process.env.VICER_ADMIN) {
+        return interaction.reply({ content: '❌ You do not have permission to post announcements.', flags: MessageFlags.Ephemeral });
+    }
+
+    const title = interaction.options.getString('title');
+    const content = interaction.options.getString('content');
+    const link = interaction.options.getString('link') || null;
+
+    // postAnnouncement calls api.vicers.net, which isn't guaranteed to answer inside
+    // Discord's 3 second initial-response window.
+    await interaction.deferReply();
+
+    try {
+        await postAnnouncement(title, content, link);
+        await interaction.editReply('✅ Announcement posted successfully!');
+    } catch (error) {
+        console.error('Error posting announcement:', error);
+        await interaction.editReply(`❌ Failed to post announcement. Error: ${error.message}`);
+    }
+}
+
+// An interaction may already have been replied to or deferred by the time an error
+// lands, and each of those needs a different call. Never throws.
+async function respondWithError(interaction, content) {
+    const payload = { content, flags: MessageFlags.Ephemeral };
+
+    try {
+        if (interaction.deferred || interaction.replied) {
+            await interaction.followUp(payload);
+        } else {
+            await interaction.reply(payload);
+        }
+    } catch (error) {
+        console.error('Failed to send interaction error reply:', error);
+    }
+}
 
 // Function to auto-verify user in other servers after manual verification
 async function autoVerifyInOtherServers(userId, verifiedInGuildId) {
