@@ -2138,10 +2138,10 @@ async function handlePresenceUpdate(newPresence) {
         const member = newPresence.member;
         if (!member || member.user.bot) return;
 
-        // Someone who isn't opted in counts as playing nothing, which also clears them
-        // out of any game still holding them from before they left the role.
-        const optedIn = member.roles.cache.has(radar.roleId);
-        const games = optedIn ? playingGameNames(newPresence) : new Set();
+        // Vice Radar tracks and publicly calls out everyone with visible activity status,
+        // opted in or not. The role only controls whether they personally get DM'd about a
+        // match, not whether they're counted, so intentionally no opt-in check here.
+        const games = playingGameNames(newPresence);
 
         await applyRadarPresence(guildId, member, games);
     } catch (error) {
@@ -2218,7 +2218,7 @@ async function evaluateRadarGame(guildId, gameName) {
         entry.dmSent = true;
         entry.peak = count;
 
-        await dmRadarSquad(guildId, gameName, memberIds);
+        await dmRadarSquad(guildId, gameName, memberIds, count);
         await postRadarEmbed(guildId, gameName, count);
         return;
     }
@@ -2231,16 +2231,24 @@ async function evaluateRadarGame(guildId, gameName) {
     }
 }
 
-// One DM per member, once per streak.
-async function dmRadarSquad(guildId, gameName, memberIds) {
+// One DM per opted-in member, once per streak. The public callout goes out for everyone
+// who was counted; only the DM is gated on the Radar role, and it's filtered here at send
+// time rather than upstream so non-opted-in players still count toward the match.
+async function dmRadarSquad(guildId, gameName, memberIds, totalCount) {
+    const radar = radarConfigFor(guildId);
+    if (!radar) return;
+
     const guild = await resolveGuild(guildId);
     if (!guild) return;
 
     for (const userId of memberIds) {
         const member = await guild.members.fetch(userId).catch(() => null);
         if (!member) continue;
+        if (!member.roles.cache.has(radar.roleId)) continue;
 
-        const others = memberIds.length - 1;
+        // The full match size, not the opted-in subset, so "3 other Vicers are playing"
+        // stays true even when only one of them is opted in to hear about it.
+        const others = totalCount - 1;
         const othersText = others === 1 ? 'Another Vicer is' : `${others} other Vicers are`;
 
         try {
@@ -2362,23 +2370,9 @@ client.on('guildMemberRemove', async (member) => {
     }
 });
 
-// Same cleanup when someone loses the opt-in role, however it was removed. A second
-// guildMemberUpdate listener rather than a branch inside the tier-sync one, so the two
-// features stay independent.
-client.on('guildMemberUpdate', async (oldMember, newMember) => {
-    try {
-        const radar = radarConfigFor(newMember.guild.id);
-        if (!radar) return;
-
-        if (newMember.roles.cache.has(radar.roleId)) return;
-        // A partial oldMember can't be diffed; fall through, since clearing is idempotent.
-        if (!oldMember.partial && !oldMember.roles.cache.has(radar.roleId)) return;
-
-        await applyRadarPresence(newMember.guild.id, newMember, new Set());
-    } catch (error) {
-        console.error('Error clearing Vice Radar state on role change:', error);
-    }
-});
+// Deliberately no listener for losing the opt-in role: tracking is not tied to the role,
+// so someone who opts out while playing stays counted toward the squad. The role only
+// decides whether they get DM'd, and dmRadarSquad checks that at send time.
 
 async function handleViceRadarCommand(interaction) {
     try {
