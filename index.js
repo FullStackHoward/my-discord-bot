@@ -3,7 +3,7 @@ require('dotenv').config();
 const fs = require('fs');
 const https = require('https');
 const path = require('path');
-const { ApplicationCommandOptionType, Client, EmbedBuilder, GatewayIntentBits, GuildScheduledEventStatus, MessageFlags } = require('discord.js');
+const { ActivityType, ApplicationCommandOptionType, Client, EmbedBuilder, GatewayIntentBits, GuildScheduledEventStatus, MessageFlags, Partials } = require('discord.js');
 
 // Create a new client instance
 const client = new Client({
@@ -11,8 +11,15 @@ const client = new Client({
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMembers
-    ]
+        GatewayIntentBits.GuildMembers,
+        // Vice Radar: GuildPresences needs the Presence Intent toggle in the Developer
+        // Portal, GuildMessageReactions powers its reaction opt-in.
+        GatewayIntentBits.GuildPresences,
+        GatewayIntentBits.GuildMessageReactions
+    ],
+    // A radar post that has aged out of the message cache arrives partial; without
+    // these the reaction opt-in would silently stop working on older posts.
+    partials: [Partials.Message, Partials.Reaction, Partials.User]
 });
 
 // Conf pulled from .env
@@ -81,6 +88,18 @@ SERVER_CONFIGS[VC_GUILD_ID].tierRoleIds = {
     vicerPlus: process.env.VC_TIER_VICER_PLUS,
     vicerPlusPlus: process.env.VC_TIER_VICER_PLUS_PLUS,
     superVicer: process.env.VC_TIER_SUPER_VICER
+};
+
+// Vice Radar (presence-based squad matching). A server is opted into the feature by
+// having BOTH of these set; leave either blank to keep Radar off in that server.
+SERVER_CONFIGS[VG_GUILD_ID].radar = {
+    roleId: process.env.VG_RADAR_ROLE,
+    channelId: process.env.VG_RADAR_CHANNEL
+};
+
+SERVER_CONFIGS[VC_GUILD_ID].radar = {
+    roleId: process.env.VC_RADAR_ROLE,
+    channelId: process.env.VC_RADAR_CHANNEL
 };
 
 // Bot log channels, one per server.
@@ -680,9 +699,12 @@ async function registerSlashCommands() {
     for (const guildId of [VG_GUILD_ID, VC_GUILD_ID, APP_GUILD_ID]) {
         if (!guildId) continue;
 
+        // Built per guild so /vice-radar doesn't show up in servers without Radar config.
+        const commands = radarConfigFor(guildId) ? [...SLASH_COMMANDS, RADAR_COMMAND] : SLASH_COMMANDS;
+
         try {
-            await client.application.commands.set(SLASH_COMMANDS, guildId);
-            console.log(`Registered ${SLASH_COMMANDS.length} slash command(s) in ${guildLabel(guildId)}`);
+            await client.application.commands.set(commands, guildId);
+            console.log(`Registered ${commands.length} slash command(s) in ${guildLabel(guildId)}`);
         } catch (error) {
             // A bot invited without the applications.commands scope fails here. The bot
             // keeps running and the !verify / !announce prefix commands still work.
@@ -707,6 +729,8 @@ client.on('interactionCreate', async (interaction) => {
             await handleVerifyCommand(interaction);
         } else if (interaction.commandName === 'announce') {
             await handleAnnounceCommand(interaction);
+        } else if (interaction.commandName === 'vice-radar') {
+            await handleViceRadarCommand(interaction);
         }
     } catch (error) {
         // Safety net for anything the handlers below don't catch themselves, e.g. the
@@ -991,6 +1015,14 @@ function warnAboutMissingConfig() {
         const missing = TIER_ORDER.filter(tierName => !tiers[tierName]);
         if (missing.length > 0) {
             console.warn(`Missing tier role IDs for ${guildLabel(guildId)}: ${missing.join(', ')} - those tiers will not sync.`);
+        }
+    }
+
+    for (const guildId of [VG_GUILD_ID, VC_GUILD_ID]) {
+        const radar = SERVER_CONFIGS[guildId]?.radar || {};
+        if (!radar.roleId && !radar.channelId) continue; // Radar deliberately off here
+        if (!radar.roleId || !radar.channelId) {
+            console.warn(`Vice Radar is half-configured for ${guildLabel(guildId)} - both the role and the channel are required, so Radar is disabled there.`);
         }
     }
 
@@ -1903,6 +1935,495 @@ async function kickApplicant(member, kickReason, log) {
     });
 
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Feature E: Vice Radar (presence-based squad matching)
+// ---------------------------------------------------------------------------
+
+// Concurrent opted-in players before a game counts as a squad worth announcing.
+const RADAR_MIN_SQUAD = 2;
+
+// Seeded onto every radar post by the bot; reacting with it grants the opt-in role.
+const RADAR_EMOJI = '🔔';
+
+const RADAR_CTA = 'React 🔔 to get pinged anytime someone\'s playing whatever you\'re playing.';
+
+// Rotated per post so consecutive embeds don't look identical. Deliberately separate
+// from LOG_COLORS: those carry staff-log meaning, these are just brand colors.
+const RADAR_COLORS = [0xFFB570, 0x2ED9C3, 0xE0A9E8];
+let radarColorIndex = 0;
+
+// Hype lines for the public post. {count} and {game} are filled in at send time.
+// Pure copy: edit, reorder or replace freely without touching any logic below.
+const RADAR_PHRASES = [
+    '{count} Vicers are running {game} right now. Squad up. 🌴',
+    '{count} Vicers deep in {game}. Room for one more?',
+    '{count} of you are on {game} at the same time. That\'s a squad, not a coincidence.',
+    '{count} Vicers just showed up in {game}. Go say hi.',
+    '{count} playing {game}. The lobby is right there.',
+    '{count} Vicers currently locked into {game}.',
+    'Headcount: {count} Vicers in {game}.',
+    '{count} Vicers, one game, zero excuses. {game} is live.',
+    '{count} of the crew are in {game} as we speak.',
+    '{count} Vicers on {game}. Somebody start the party.',
+    '{count} Vicers spotted in {game}. Radar doesn\'t lie.',
+    'That\'s {count} Vicers in {game}. Your move.',
+    '{count} Vicers are already in {game}. Don\'t make them wait.',
+    '{count} on {game} right now — the squad is forming without you.',
+    '{count} Vicers in {game}. Grab a controller.',
+    'We\'ve got {count} Vicers in {game} this minute.',
+    '{count} Vicers queued into {game}. Join the stack.',
+    '{count} Vicers just lit up {game}.',
+    '{count} Vicers are live on {game}. Slide in.',
+    '{count} in {game}. That number goes up if you move fast.',
+    '{count} Vicers picked {game} tonight. Good taste.',
+    '{count} Vicers are mid-session on {game}.',
+    '{count} Vicers are grinding {game}. Bring snacks.',
+    '{count} Vicers in {game} — that\'s a full crew forming.',
+    'Count it: {count} Vicers, all in {game}.',
+    '{game} is popping off — {count} Vicers in there now.',
+    'The {game} lobby is filling up. {count} Vicers deep already.',
+    '{game} just hit {count} Vicers. The night is young.',
+    '{game} is the pick tonight. {count} Vicers agree.',
+    '{game} servers are getting a Vice takeover: {count} and counting.',
+    '{game} is live in the community right now — {count} Vicers on it.',
+    '{game} has {count} Vicers in it. Make it one more.',
+    'Something\'s happening in {game}. {count} Vicers, same time.',
+    '{game} is calling. {count} Vicers already picked up.',
+    '{game} session in progress — {count} Vicers strong.',
+    '{game} is where the crew is. {count} of them, right now.',
+    '{game} just became the main event. {count} Vicers in.',
+    '{game}: {count} Vicers, live, this second.',
+    '{game} is running hot with {count} Vicers on deck.',
+    '{game} got the Vicer stamp of approval — {count} playing now.',
+    '{game} is officially a whole thing tonight. {count} in.',
+    'Everybody\'s on {game}. Well, {count} of us are.',
+    '{game} is where it\'s at — {count} Vicers can\'t be wrong.',
+    '{game} lobby check: {count} Vicers present.',
+    '{game} has the crew\'s attention. {count} Vicers deep.',
+    '{game} is trending in Vice right now. {count} playing.',
+    'Word is {game} is the move. {count} Vicers already on it.',
+    '{game} is live and {count} Vicers are on the ride.',
+    '{game} has {count} Vicers in the mix already.',
+    '{game} just pulled {count} Vicers in at once.',
+    'Neon\'s on. {count} Vicers in {game}.',
+    'Radar ping 🔔 — {game}, {count} Vicers active.',
+    'The strip is glowing: {count} Vicers on {game}.',
+    'Palms up 🌴 {count} Vicers are in {game}.',
+    'Sunset, neon, and {count} Vicers playing {game}.',
+    'Vice Radar picked up {count} signals in {game}.',
+    'Signal detected: {count} Vicers, {game}, right now.',
+    'The radar lit up for {game} — {count} Vicers on screen.',
+    'Cruising into {game} with {count} Vicers aboard.',
+    'Neon lights, {count} Vicers, one {game} lobby.',
+    'Miami nights energy: {count} Vicers in {game}.',
+    'The Vice Radar is blinking. {count} Vicers in {game}.',
+    '{count} blips on the radar, all in {game}.',
+    'Tuned in: {count} Vicers on the {game} frequency.',
+    'Radar sweep complete — {count} Vicers found in {game}.',
+    'Pink skies and {count} Vicers in {game}.',
+    'The night crew is up: {count} Vicers on {game}.',
+    'Synthwave on, {game} on, {count} Vicers on.',
+    'Somewhere between the palms and the neon, {count} Vicers are playing {game}.',
+    'Radar\'s hot 🔥 {count} Vicers in {game}.',
+    'Full beams on {game} — {count} Vicers rolling.',
+    '{count} Vicers are cruising through {game} right now.',
+    'Chrome, neon, and {count} Vicers in {game}.',
+    'The Vice skyline is lit and {count} Vicers are in {game}.',
+    'Radar contact: {count} Vicers, {game}, no drill.',
+    'Don\'t play alone — {count} Vicers are already in {game}.',
+    'Solo queue is a choice. {count} Vicers are in {game}.',
+    'Your squad assembled itself. {count} Vicers, {game}, go.',
+    'You could be the next one in {game}. {count} Vicers are already there.',
+    'Hop in: {count} Vicers are waiting in {game}.',
+    '{count} Vicers in {game}. Yes, they\'d let you join.',
+    'Stop scrolling. {count} Vicers are in {game}.',
+    'The hard part\'s done — {count} Vicers already found each other in {game}.',
+    'Fastest way to not play alone: {game}, {count} Vicers, right now.',
+    'Boot it up. {count} Vicers are in {game}.',
+    '{count} Vicers in {game} and the party\'s still open.',
+    'This is your sign to load up {game}. {count} Vicers are in.',
+    '{count} Vicers in {game}. The lobby has your name on it.',
+    'Someone say squad? {count} Vicers in {game}.',
+    '{count} Vicers went and started {game} without telling you. Rude.',
+    'Consider yourself invited: {game}, {count} Vicers in.',
+    'Free real estate in the {game} lobby — {count} Vicers already there.',
+    'No plans? {count} Vicers are in {game}.',
+    '{count} Vicers in {game}. Go be the reason it gets loud.',
+    'The {game} crew is {count} strong and growing.',
+    'Make it a party: {count} Vicers already on {game}.',
+    '{count} Vicers are in {game}. Odds are they need a fourth.',
+    'You\'ve got {count} reasons to open {game} right now.',
+    '{game} squad forming — {count} Vicers locked in.',
+    '{count} Vicers in {game}. Go win something. 🏆',
+];
+
+const RADAR_COMMAND = {
+    name: 'vice-radar',
+    description: 'Get notified when others are playing the same game as you',
+    options: [
+        {
+            name: 'action',
+            description: 'Turn Vice Radar on or off',
+            type: ApplicationCommandOptionType.String,
+            required: true,
+            choices: [
+                { name: 'Join', value: 'join' },
+                { name: 'Leave', value: 'leave' }
+            ]
+        }
+    ]
+};
+
+// guildId -> Map<gameName, { activeMembers: Set<userId>, peak: number, dmSent: boolean }>
+// In-memory only, by design: presence rebuilds itself within seconds of a restart, so
+// unlike the application sweep's multi-hour countdowns there's nothing worth persisting.
+const radarState = new Map();
+
+// Message IDs of radar posts sent since the last restart, so a stray reaction on an
+// unrelated message can never grant the role.
+const radarPostIds = new Set();
+
+// Radar is on for a server only when both its role and its channel are configured.
+function radarConfigFor(guildId) {
+    const radar = SERVER_CONFIGS[guildId]?.radar;
+    if (!radar || !radar.roleId || !radar.channelId) return null;
+    return radar;
+}
+
+function radarGamesFor(guildId) {
+    let games = radarState.get(guildId);
+    if (!games) {
+        games = new Map();
+        radarState.set(guildId, games);
+    }
+    return games;
+}
+
+// Every game the member is showing as Playing. Streaming, Listening, Watching and
+// Custom statuses deliberately don't count. Empty when they're offline or idle.
+function playingGameNames(presence) {
+    if (!presence) return new Set();
+
+    return new Set(
+        presence.activities
+            .filter(activity => activity.type === ActivityType.Playing && activity.name)
+            .map(activity => activity.name)
+    );
+}
+
+// Game names come straight from Discord, so a name containing $& or $' would be read
+// as a replacement pattern by a plain string replace. The function form can't be.
+function pickPhrase(count, gameName) {
+    const phrase = RADAR_PHRASES[Math.floor(Math.random() * RADAR_PHRASES.length)];
+
+    return phrase
+        .replace(/\{count\}/g, () => String(count))
+        .replace(/\{game\}/g, () => gameName);
+}
+
+client.on('presenceUpdate', (oldPresence, newPresence) => {
+    void handlePresenceUpdate(newPresence);
+});
+
+async function handlePresenceUpdate(newPresence) {
+    try {
+        const guildId = newPresence?.guild?.id;
+        if (!guildId) return;
+
+        const radar = radarConfigFor(guildId);
+        if (!radar) return;
+
+        const member = newPresence.member;
+        if (!member || member.user.bot) return;
+
+        // Someone who isn't opted in counts as playing nothing, which also clears them
+        // out of any game still holding them from before they left the role.
+        const optedIn = member.roles.cache.has(radar.roleId);
+        const games = optedIn ? playingGameNames(newPresence) : new Set();
+
+        await applyRadarPresence(guildId, member, games);
+    } catch (error) {
+        console.error('Error in presenceUpdate event:', error);
+    }
+}
+
+// Reconciles one member's tracked games against what they're actually playing, then
+// re-evaluates every game the change touched.
+//
+// oldPresence is deliberately ignored rather than diffed: it's null whenever the member
+// wasn't already in the presence cache, which is exactly the case on the first event
+// after a restart, so diffing against it would silently miss that first game start.
+async function applyRadarPresence(guildId, member, currentGames) {
+    const games = radarGamesFor(guildId);
+    const touched = new Set();
+
+    // Drop them from anything they're no longer playing.
+    for (const [gameName, entry] of games.entries()) {
+        if (currentGames.has(gameName)) continue;
+        if (entry.activeMembers.delete(member.id)) touched.add(gameName);
+    }
+
+    // Add them to anything new.
+    for (const gameName of currentGames) {
+        let entry = games.get(gameName);
+
+        if (!entry) {
+            entry = { activeMembers: new Set(), peak: 0, dmSent: false };
+            games.set(gameName, entry);
+        }
+
+        if (!entry.activeMembers.has(member.id)) {
+            entry.activeMembers.add(member.id);
+            touched.add(gameName);
+        }
+    }
+
+    for (const gameName of touched) {
+        await evaluateRadarGame(guildId, gameName);
+    }
+}
+
+// Decides whether a game's current headcount is worth announcing. Runs after every
+// change to that game's roster.
+async function evaluateRadarGame(guildId, gameName) {
+    const games = radarGamesFor(guildId);
+    const entry = games.get(gameName);
+    if (!entry) return;
+
+    const count = entry.activeMembers.size;
+
+    if (count < RADAR_MIN_SQUAD) {
+        // Nobody playing it at all: drop the entry so the map doesn't collect dead games.
+        if (count === 0) {
+            games.delete(gameName);
+            return;
+        }
+
+        // One player left. Keep the roster - the next person to start this game has to be
+        // able to see them, or a squad could never form - but forget the streak, so a rise
+        // back to 2+ counts as brand new. This is the reset rule that replaces any
+        // time-based cooldown.
+        entry.peak = 0;
+        entry.dmSent = false;
+        return;
+    }
+
+    const memberIds = [...entry.activeMembers];
+
+    if (!entry.dmSent) {
+        // Set both before awaiting: presence events keep arriving while the DMs go out,
+        // and a re-entrant call here would otherwise DM the same squad twice.
+        entry.dmSent = true;
+        entry.peak = count;
+
+        await dmRadarSquad(guildId, gameName, memberIds);
+        await postRadarEmbed(guildId, gameName, count);
+        return;
+    }
+
+    // Already announced this streak, so only a new high-water mark earns another post,
+    // and never another round of DMs.
+    if (count > entry.peak) {
+        entry.peak = count;
+        await postRadarEmbed(guildId, gameName, count);
+    }
+}
+
+// One DM per member, once per streak.
+async function dmRadarSquad(guildId, gameName, memberIds) {
+    const guild = await resolveGuild(guildId);
+    if (!guild) return;
+
+    for (const userId of memberIds) {
+        const member = await guild.members.fetch(userId).catch(() => null);
+        if (!member) continue;
+
+        const others = memberIds.length - 1;
+        const othersText = others === 1 ? 'Another Vicer is' : `${others} other Vicers are`;
+
+        try {
+            await member.send(
+                `🔔 **Vice Radar**\n\n` +
+                `${othersText} playing **${gameName}** right now in **${guild.name}**.\n\n` +
+                `Jump in and squad up. 🌴`
+            );
+        } catch (dmError) {
+            // Closed DMs are normal, not a fault worth alerting staff about.
+            console.log(`Could not send Vice Radar DM to ${member.user.tag}`);
+        }
+    }
+}
+
+// The public, user-facing post. Intentionally not routed through sendStaffLog: that
+// only ever posts to staff log channels, and this is community-facing copy.
+async function postRadarEmbed(guildId, gameName, count) {
+    try {
+        const radar = radarConfigFor(guildId);
+        if (!radar) return;
+
+        const guild = await resolveGuild(guildId);
+        if (!guild) return;
+
+        const channel = await guild.channels.fetch(radar.channelId).catch(() => null);
+        if (!channel || !channel.isTextBased()) {
+            console.error(`Vice Radar channel ${radar.channelId} not found or not text-based in ${guild.name}`);
+            return;
+        }
+
+        const embed = new EmbedBuilder()
+            .setColor(RADAR_COLORS[radarColorIndex % RADAR_COLORS.length])
+            .setDescription(pickPhrase(count, gameName))
+            .addFields({ name: '​', value: RADAR_CTA });
+
+        radarColorIndex++;
+
+        const sent = await channel.send({ embeds: [embed] });
+
+        // Tracked before the reaction is seeded: if seeding fails, a member adding the
+        // emoji themselves should still opt them in.
+        radarPostIds.add(sent.id);
+
+        await sent.react(RADAR_EMOJI).catch(() => {
+            console.warn(`Could not seed the ${RADAR_EMOJI} reaction on the Vice Radar post in ${guild.name}`);
+        });
+
+        console.log(`Vice Radar: posted ${gameName} (${count} playing) in ${guild.name}`);
+    } catch (error) {
+        console.error('Error posting Vice Radar embed:', error);
+
+        await sendStaffLog(guildId, {
+            color: LOG_COLORS.error,
+            title: '⚠️ Vice Radar Post Failed',
+            description: `A squad match for **${gameName}** could not be posted in ${guildLabel(guildId)}.`,
+            fields: [errorField(error)],
+            footer: 'Check the radar channel ID and that the bot can post embeds there.'
+        });
+    }
+}
+
+client.on('messageReactionAdd', async (reaction, user) => {
+    try {
+        if (user.bot || user.id === client.user.id) return;
+
+        // A post that has aged out of the message cache arrives partial.
+        if (reaction.partial) {
+            reaction = await reaction.fetch().catch(() => null);
+            if (!reaction) return;
+        }
+
+        if (reaction.emoji.name !== RADAR_EMOJI) return;
+        if (!radarPostIds.has(reaction.message.id)) return;
+
+        const guildId = reaction.message.guildId;
+        const radar = radarConfigFor(guildId);
+        if (!radar) return;
+
+        const guild = await resolveGuild(guildId);
+        if (!guild) return;
+
+        const member = await guild.members.fetch(user.id).catch(() => null);
+        if (!member) return;
+        // Re-checked on the member: an uncached user arrives partial, with no bot flag set.
+        if (member.user.bot) return;
+        if (member.roles.cache.has(radar.roleId)) return; // already opted in
+
+        if (!canManageRole(guild, radar.roleId)) {
+            console.error(`Cannot grant the Vice Radar role in ${guild.name} - my role must sit above it`);
+
+            await sendStaffLog(guildId, {
+                color: LOG_COLORS.error,
+                title: '⚠️ Vice Radar Opt-In Failed',
+                description: `**${member.user.tag}** (<@${member.id}>) reacted to opt into Vice Radar, but the role could not be granted.`,
+                fields: [
+                    { name: 'Reason', value: 'The bot\'s highest role sits below the Vice Radar role.' }
+                ],
+                footer: 'Move the bot\'s role above the Vice Radar role in server settings.'
+            });
+            return;
+        }
+
+        await member.roles.add(radar.roleId);
+        console.log(`Vice Radar: ${member.user.tag} opted in via reaction in ${guild.name}`);
+    } catch (error) {
+        console.error('Error handling Vice Radar reaction:', error);
+    }
+});
+
+// Leaving the server pulls the member out of every game they were counted in, exactly
+// as if they'd stopped playing.
+client.on('guildMemberRemove', async (member) => {
+    try {
+        if (!radarConfigFor(member.guild.id)) return;
+        await applyRadarPresence(member.guild.id, member, new Set());
+    } catch (error) {
+        console.error('Error clearing Vice Radar state on member leave:', error);
+    }
+});
+
+// Same cleanup when someone loses the opt-in role, however it was removed. A second
+// guildMemberUpdate listener rather than a branch inside the tier-sync one, so the two
+// features stay independent.
+client.on('guildMemberUpdate', async (oldMember, newMember) => {
+    try {
+        const radar = radarConfigFor(newMember.guild.id);
+        if (!radar) return;
+
+        if (newMember.roles.cache.has(radar.roleId)) return;
+        // A partial oldMember can't be diffed; fall through, since clearing is idempotent.
+        if (!oldMember.partial && !oldMember.roles.cache.has(radar.roleId)) return;
+
+        await applyRadarPresence(newMember.guild.id, newMember, new Set());
+    } catch (error) {
+        console.error('Error clearing Vice Radar state on role change:', error);
+    }
+});
+
+async function handleViceRadarCommand(interaction) {
+    try {
+        const radar = radarConfigFor(interaction.guildId);
+        if (!radar) {
+            return interaction.reply({ content: '❌ Vice Radar is not configured for this server.', flags: MessageFlags.Ephemeral });
+        }
+
+        if (!canManageRole(interaction.guild, radar.roleId)) {
+            return interaction.reply({ content: '❌ I cannot manage the Vice Radar role. My role must be positioned above it in server settings.', flags: MessageFlags.Ephemeral });
+        }
+
+        const action = interaction.options.getString('action');
+        const member = interaction.member;
+
+        if (action === 'join') {
+            if (member.roles.cache.has(radar.roleId)) {
+                return interaction.reply({ content: '🔔 You\'re already on Vice Radar.', flags: MessageFlags.Ephemeral });
+            }
+
+            await member.roles.add(radar.roleId);
+            console.log(`Vice Radar: ${interaction.user.tag} opted in via /vice-radar in ${interaction.guild.name}`);
+
+            return interaction.reply({
+                content: '🔔 You\'re on **Vice Radar**. You\'ll get a DM when other Vicers are playing the same game as you.\n\n' +
+                    'One thing: Discord only shows what you\'re playing if **Settings → Activity Privacy → "Display current activity as a status message"** is on. With it off, nobody can match with you.',
+                flags: MessageFlags.Ephemeral
+            });
+        }
+
+        if (!member.roles.cache.has(radar.roleId)) {
+            return interaction.reply({ content: 'You\'re not on Vice Radar right now.', flags: MessageFlags.Ephemeral });
+        }
+
+        await member.roles.remove(radar.roleId);
+        // The guildMemberUpdate listener above also clears this; doing it here too just
+        // means the count is correct immediately rather than an event later. Idempotent.
+        await applyRadarPresence(interaction.guildId, member, new Set());
+        console.log(`Vice Radar: ${interaction.user.tag} opted out via /vice-radar in ${interaction.guild.name}`);
+
+        return interaction.reply({ content: 'You\'re off **Vice Radar**. Run `/vice-radar join` any time to come back.', flags: MessageFlags.Ephemeral });
+    } catch (error) {
+        console.error('Error handling /vice-radar:', error);
+        await respondWithError(interaction, '❌ Something went wrong updating your Vice Radar role. Please try again.');
+    }
 }
 
 // Error handling

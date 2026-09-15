@@ -151,6 +151,14 @@ VG_LOG_CHANNEL=
 VC_LOG_CHANNEL=
 APP_LOG_CHANNEL=
 
+# Vice Radar (squad matching)
+# A server only runs Vice Radar if BOTH of its entries are filled in.
+# Leave a pair blank to keep Radar off in that server.
+VG_RADAR_ROLE=
+VG_RADAR_CHANNEL=
+VC_RADAR_ROLE=
+VC_RADAR_CHANNEL=
+
 # Reference only, not read by the reconciliation logic
 VG_WAITING_ROOM_CHANNEL=
 VC_WAITING_ROOM_CHANNEL=
@@ -224,6 +232,23 @@ Every hour (and once at startup) the bot sweeps both main servers to catch anyth
 
 Bots, staff, and server owners are skipped. Every correction posts to the server's bot log channel.
 
+### Vice Radar (Squad Matching)
+
+Opt-in presence matching, so squads form without anyone having to ask "who's on?".
+
+- Members opt in with `/vice-radar join`, or by reacting 🔔 to any Vice Radar post. `/vice-radar leave` opts back out.
+- When **two or more** opted-in members are playing the same game at the same time, the bot DMs each of them once and posts a public embed to the radar channel.
+- Only activities Discord reports as *Playing* count. Streaming, Listening (Spotify), Watching, and custom statuses are ignored. Games are matched on their exact activity name.
+- While a squad stays together, the post repeats only when the headcount reaches a **new high**, and the DMs never repeat. Once the count falls below two, the streak resets — the next time it reaches two, it's treated as brand new.
+- Runs per server: Vice Gamers, Vice Creators, or both, depending on which `*_RADAR_ROLE` / `*_RADAR_CHANNEL` pairs are set. `/vice-radar` is only registered in servers where Radar is configured.
+
+State is held in memory only and rebuilds itself within seconds of a restart as presence events arrive, so nothing is persisted to disk.
+
+**Two things gate this feature outside the code:**
+
+1. The **Presence Intent** must be enabled on the Bot page of the Discord Developer Portal. Without it presence events never fire — silently, with no error.
+2. Each member must have **Settings → Activity Privacy → "Display current activity as a status message"** turned on. With it off, Discord shows nobody what they're playing, the bot included. There is no way to detect or work around this from the bot side.
+
 ### Staff Activity Log
 
 Each of the three servers has its own bot log channel (`VG_LOG_CHANNEL`, `VC_LOG_CHANNEL`, `APP_LOG_CHANNEL`). Member lifecycle events are posted there as color-coded embeds so staff can scan a channel at a glance:
@@ -278,6 +303,16 @@ When inviting the bot to a server, the following permissions are required:
 - Read Message History
 - Manage Events (required for planned event sync feature)
 - Kick Members (required on the Application Server for the auto-kick)
+- Add Reactions (required in the Vice Radar channel, so the bot can seed the 🔔 opt-in reaction)
+
+The bot's own role must sit **above** the verified, tier, and Vice Radar roles for it to grant them.
+
+### Privileged Gateway Intents
+
+Enabled on the Bot page of the Discord Developer Portal:
+
+- **Server Members Intent** — member joins, role syncing, reconciliation
+- **Presence Intent** — Vice Radar only; leave it off and the rest of the bot is unaffected
 
 ---
 
