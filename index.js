@@ -12,16 +12,15 @@ const client = new Client({
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMembers,
-        // Vice Radar: GuildPresences needs the Presence Intent toggle in the Developer
-        // Portal, GuildMessageReactions powers its reaction opt-in.
+        // Vice Radar: needs the Presence Intent toggle in the Developer Portal.
         GatewayIntentBits.GuildPresences,
-        GatewayIntentBits.GuildMessageReactions,
         // Event RSVP DMs: not a privileged intent, no Developer Portal toggle needed.
         GatewayIntentBits.GuildScheduledEvents
     ],
-    // A radar post that has aged out of the message cache arrives partial; without
-    // these the reaction opt-in would silently stop working on older posts.
-    partials: [Partials.Message, Partials.Reaction, Partials.User]
+    // Partials.User is load-bearing for guildScheduledEventUserAdd: discord.js resolves
+    // the RSVPing user from the user cache and drops the event entirely when it misses,
+    // so without this an RSVP from an uncached user would silently never be confirmed.
+    partials: [Partials.User]
 });
 
 // Conf pulled from .env
@@ -96,12 +95,14 @@ SERVER_CONFIGS[VC_GUILD_ID].tierRoleIds = {
 // having BOTH of these set; leave either blank to keep Radar off in that server.
 SERVER_CONFIGS[VG_GUILD_ID].radar = {
     roleId: process.env.VG_RADAR_ROLE,
-    channelId: process.env.VG_RADAR_CHANNEL
+    channelId: process.env.VG_RADAR_CHANNEL,
+    optInChannelId: process.env.VG_OPTIN_CHANNEL
 };
 
 SERVER_CONFIGS[VC_GUILD_ID].radar = {
     roleId: process.env.VC_RADAR_ROLE,
-    channelId: process.env.VC_RADAR_CHANNEL
+    channelId: process.env.VC_RADAR_CHANNEL,
+    optInChannelId: process.env.VC_OPTIN_CHANNEL
 };
 
 // Bot log channels, one per server.
@@ -2160,10 +2161,14 @@ const RADAR_MIN_SQUAD = 2;
 // resets feel sluggish, up if flicker still gets through.
 const RADAR_RESET_GRACE_MS = 5 * 60 * 1000;
 
-// Seeded onto every radar post by the bot; reacting with it grants the opt-in role.
-const RADAR_EMOJI = '🔔';
+// Built per guild rather than held as a constant: a <#id> mention only renders as a
+// link in the guild that owns the channel, so each server needs its own. Guilds without
+// an opt-in channel configured fall back to plain text.
+function radarCta(radar) {
+    const optIn = radar.optInChannelId ? `<#${radar.optInChannelId}>` : '#opt-in';
 
-const RADAR_CTA = 'React 🔔 to get pinged anytime someone\'s playing whatever you\'re playing.';
+    return `Use /vice-radar join or grab the role in ${optIn} to get pinged anytime someone's playing whatever you're playing.`;
+}
 
 // Rotated per post so consecutive embeds don't look identical. Deliberately separate
 // from LOG_COLORS: those carry staff-log meaning, these are just brand colors.
@@ -2296,10 +2301,6 @@ const RADAR_COMMAND = {
 // In-memory only, by design: presence rebuilds itself within seconds of a restart, so
 // unlike the application sweep's multi-hour countdowns there's nothing worth persisting.
 const radarState = new Map();
-
-// Message IDs of radar posts sent since the last restart, so a stray reaction on an
-// unrelated message can never grant the role.
-const radarPostIds = new Set();
 
 // Radar is on for a server only when both its role and its channel are configured.
 function radarConfigFor(guildId) {
@@ -2520,26 +2521,20 @@ async function postRadarEmbed(guildId, gameName, count) {
             return;
         }
 
-        // The leading "## " renders the headcount line as a Discord heading. RADAR_CTA
-        // stays a plain field so it keeps rendering at its normal size underneath.
+        // setAuthor renders top-left, setFooter bottom-left; there's no positioning knob
+        // on either, so moving the brand line means swapping which one is called.
+        //
+        // The CTA sits in the description rather than addFields because Discord puts a
+        // fixed, larger gap above a fields section than between lines of the description.
+        // Folding it in behind a single \n is the only lever that tightens that gap.
         const embed = new EmbedBuilder()
             .setColor(RADAR_COLORS[radarColorIndex % RADAR_COLORS.length])
-            .setDescription(`## ${pickPhrase(count, gameName)}`)
-            .addFields({ name: '​', value: RADAR_CTA })
-            .setFooter({ text: 'Vice Radar 🌴' })
-            .setTimestamp();
+            .setAuthor({ name: 'Vice Radar 🌴' })
+            .setDescription(`## ${pickPhrase(count, gameName)}\n${radarCta(radar)}`);
 
         radarColorIndex++;
 
-        const sent = await channel.send({ embeds: [embed] });
-
-        // Tracked before the reaction is seeded: if seeding fails, a member adding the
-        // emoji themselves should still opt them in.
-        radarPostIds.add(sent.id);
-
-        await sent.react(RADAR_EMOJI).catch(() => {
-            console.warn(`Could not seed the ${RADAR_EMOJI} reaction on the Vice Radar post in ${guild.name}`);
-        });
+        await channel.send({ embeds: [embed] });
 
         console.log(`Vice Radar: posted ${gameName} (${count} playing) in ${guild.name}`);
     } catch (error) {
@@ -2554,54 +2549,6 @@ async function postRadarEmbed(guildId, gameName, count) {
         });
     }
 }
-
-client.on('messageReactionAdd', async (reaction, user) => {
-    try {
-        if (user.bot || user.id === client.user.id) return;
-
-        // A post that has aged out of the message cache arrives partial.
-        if (reaction.partial) {
-            reaction = await reaction.fetch().catch(() => null);
-            if (!reaction) return;
-        }
-
-        if (reaction.emoji.name !== RADAR_EMOJI) return;
-        if (!radarPostIds.has(reaction.message.id)) return;
-
-        const guildId = reaction.message.guildId;
-        const radar = radarConfigFor(guildId);
-        if (!radar) return;
-
-        const guild = await resolveGuild(guildId);
-        if (!guild) return;
-
-        const member = await guild.members.fetch(user.id).catch(() => null);
-        if (!member) return;
-        // Re-checked on the member: an uncached user arrives partial, with no bot flag set.
-        if (member.user.bot) return;
-        if (member.roles.cache.has(radar.roleId)) return; // already opted in
-
-        if (!canManageRole(guild, radar.roleId)) {
-            console.error(`Cannot grant the Vice Radar role in ${guild.name} - my role must sit above it`);
-
-            await sendStaffLog(guildId, {
-                color: LOG_COLORS.error,
-                title: '⚠️ Vice Radar Opt-In Failed',
-                description: `**${member.user.tag}** (<@${member.id}>) reacted to opt into Vice Radar, but the role could not be granted.`,
-                fields: [
-                    { name: 'Reason', value: 'The bot\'s highest role sits below the Vice Radar role.' }
-                ],
-                footer: 'Move the bot\'s role above the Vice Radar role in server settings.'
-            });
-            return;
-        }
-
-        await member.roles.add(radar.roleId);
-        console.log(`Vice Radar: ${member.user.tag} opted in via reaction in ${guild.name}`);
-    } catch (error) {
-        console.error('Error handling Vice Radar reaction:', error);
-    }
-});
 
 // Leaving the server pulls the member out of every game they were counted in, exactly
 // as if they'd stopped playing.
