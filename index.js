@@ -15,7 +15,9 @@ const client = new Client({
         // Vice Radar: GuildPresences needs the Presence Intent toggle in the Developer
         // Portal, GuildMessageReactions powers its reaction opt-in.
         GatewayIntentBits.GuildPresences,
-        GatewayIntentBits.GuildMessageReactions
+        GatewayIntentBits.GuildMessageReactions,
+        // Event RSVP DMs: not a privileged intent, no Developer Portal toggle needed.
+        GatewayIntentBits.GuildScheduledEvents
     ],
     // A radar post that has aged out of the message cache arrives partial; without
     // these the reaction opt-in would silently stop working on older posts.
@@ -169,9 +171,26 @@ const APPLICATION_STATE_PATH = path.join(__dirname, 'application-server-state.js
 
 let applicationState = { applyNudges: {}, joinNudges: {} };
 
+// Event RSVP reminders. Checked every minute so the 15-minute mark is caught within a
+// tight window; reminded occurrences are dropped a day past their start so the state
+// file doesn't grow forever.
+const EVENT_REMINDER_CHECK_INTERVAL_MS = 60 * 1000;
+const EVENT_REMINDER_WINDOW_MS = 15 * 60 * 1000;
+const EVENT_REMINDER_PRUNE_AGE_MS = 24 * 60 * 60 * 1000;
+const EVENT_REMINDER_STATE_PATH = path.join(__dirname, 'event-reminder-state.json');
+
+// Discord's error code for a closed DM or a blocked bot, as opposed to a transient
+// failure. Only this one earns a public callout.
+const DM_CLOSED_ERROR_CODE = 50007;
+
+// Keyed "eventId:startTimestamp" -> startTimestamp. See runEventReminderSweep for why
+// the timestamp is part of the key.
+let eventReminderState = { remindedOccurrences: {} };
+
 let eventChannelSyncRunning = false;
 let reconciliationRunning = false;
 let applicationSweepRunning = false;
+let eventReminderSweepRunning = false;
 
 // Bot ready event
 client.once('ready', () => {
@@ -180,6 +199,7 @@ client.once('ready', () => {
 
     warnAboutMissingConfig();
     loadApplicationState();
+    loadEventReminderState();
 
     void registerSlashCommands();
 
@@ -199,6 +219,11 @@ client.once('ready', () => {
             void runApplicationSweep();
         }, APPLICATION_SWEEP_INTERVAL_MS);
     }, APPLICATION_SWEEP_START_DELAY_MS);
+
+    void runEventReminderSweep();
+    setInterval(() => {
+        void runEventReminderSweep();
+    }, EVENT_REMINDER_CHECK_INTERVAL_MS);
 });
 
 // Handle member joining a server
@@ -559,6 +584,192 @@ function extractEventIdFromMessage(message, guildId) {
 
 function escapeRegex(value) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// ---------------------------------------------------------------------------
+// Event RSVP confirmations and 15-minute reminders
+// ---------------------------------------------------------------------------
+
+// Tells someone publicly that we couldn't reach them, because a closed DM is the one
+// failure they can actually fix. Reuses the guild's Vice Radar channel rather than
+// introducing new config, and stays silent where Radar isn't set up, the same way
+// Vice Radar itself does.
+async function announceClosedDMs(guildId, userId, eventName) {
+    const radar = radarConfigFor(guildId);
+    if (!radar) return;
+
+    try {
+        const guild = await resolveGuild(guildId);
+        if (!guild) return;
+
+        const channel = await guild.channels.fetch(radar.channelId).catch(() => null);
+        if (!channel || !channel.isTextBased()) return;
+
+        await channel.send(
+            `⚠️ <@${userId}>, we tried to DM you about **${eventName}** but your DMs are closed. ` +
+            `Open DMs from server members to get RSVP confirmations and reminders.`
+        );
+    } catch (error) {
+        console.error(`Failed to post closed-DM callout for ${userId}:`, error);
+    }
+}
+
+// Fires the moment someone marks Interested on a Discord scheduled event. A recurring
+// event is one persistent object, so this fires once for the whole series rather than
+// once per occurrence.
+client.on('guildScheduledEventUserAdd', async (scheduledEvent, user) => {
+    try {
+        if (user.bot) return;
+        if (!EVENT_CHANNELS.some(({ guildId }) => guildId === scheduledEvent.guildId)) return;
+
+        // null for a one-off event, an object for a recurring one.
+        const recurringNote = scheduledEvent.recurrenceRule
+            ? ` This one repeats, so you'll get a reminder before each occurrence, not just this one.`
+            : '';
+
+        await user.send(
+            `✅ You're RSVP'd for **${scheduledEvent.name}**!\n\n` +
+            `We'll send you another reminder about 15 minutes before it starts.${recurringNote}`
+        );
+    } catch (error) {
+        if (error.code === DM_CLOSED_ERROR_CODE) {
+            console.log(`Closed DMs: ${user.tag} could not receive an RSVP confirmation for "${scheduledEvent.name}"`);
+            await announceClosedDMs(scheduledEvent.guildId, user.id, scheduledEvent.name);
+        } else {
+            console.error('Unexpected error sending RSVP confirmation DM:', error);
+        }
+    }
+});
+
+function loadEventReminderState() {
+    try {
+        const parsed = JSON.parse(fs.readFileSync(EVENT_REMINDER_STATE_PATH, 'utf8'));
+
+        eventReminderState = { remindedOccurrences: parsed.remindedOccurrences || {} };
+
+        console.log(`Loaded event reminder state: ${Object.keys(eventReminderState.remindedOccurrences).length} occurrence(s) already reminded`);
+    } catch (error) {
+        // A missing file is the normal first-run case; anything else is worth seeing.
+        if (error.code !== 'ENOENT') {
+            console.error('Could not read event reminder state, starting from empty:', error);
+        }
+
+        eventReminderState = { remindedOccurrences: {} };
+    }
+}
+
+async function saveEventReminderState() {
+    try {
+        fs.writeFileSync(EVENT_REMINDER_STATE_PATH, JSON.stringify(eventReminderState, null, 2));
+    } catch (error) {
+        // A save failure here risks a duplicate reminder after a restart, not a missed
+        // one, so this is a console error rather than a staff log page.
+        console.error('Failed to save event reminder state:', error);
+    }
+}
+
+// Returns true when anything was dropped, so the caller knows to re-save.
+function pruneEventReminderState(now) {
+    let changed = false;
+
+    for (const [key, startTimestamp] of Object.entries(eventReminderState.remindedOccurrences)) {
+        if (now - startTimestamp > EVENT_REMINDER_PRUNE_AGE_MS) {
+            delete eventReminderState.remindedOccurrences[key];
+            changed = true;
+        }
+    }
+
+    return changed;
+}
+
+// There's no gateway event for "an event is starting soon", so this is a periodic check
+// against wall-clock time. That makes it naturally restart-safe: a restart any time
+// before the 15-minute mark still leaves the next tick to catch it. The one gap is a bot
+// that's offline for the whole window between the mark and the start, which misses that
+// occurrence outright.
+//
+// Subscribers are fetched at send time rather than recorded at RSVP time, so anyone who
+// un-marks Interested beforehand drops out of the reminder with no extra bookkeeping.
+async function runEventReminderSweep() {
+    if (eventReminderSweepRunning) {
+        console.log('Event reminder sweep already running, skipping this pass.');
+        return;
+    }
+
+    eventReminderSweepRunning = true;
+
+    try {
+        const now = Date.now();
+        let stateChanged = pruneEventReminderState(now);
+
+        for (const { guildId } of EVENT_CHANNELS) {
+            const guild = await resolveGuild(guildId);
+            if (!guild) continue;
+
+            let scheduledEvents;
+
+            try {
+                scheduledEvents = await guild.scheduledEvents.fetch();
+            } catch (error) {
+                console.error(`Failed to fetch scheduled events for the reminder sweep in ${guild.name}:`, error);
+                continue; // This guild's reminders get picked up on the next tick.
+            }
+
+            for (const event of scheduledEvents.values()) {
+                const isUpcoming = event.status === GuildScheduledEventStatus.Scheduled
+                    || event.status === GuildScheduledEventStatus.Active;
+                if (!isUpcoming || !event.scheduledStartTimestamp) continue;
+
+                // Keyed by occurrence, not by event ID. A recurring event keeps one
+                // persistent ID and just advances its start timestamp, so an ID-only key
+                // would remind for the first occurrence and then never again.
+                const occurrenceKey = `${event.id}:${event.scheduledStartTimestamp}`;
+                if (eventReminderState.remindedOccurrences[occurrenceKey]) continue;
+
+                const msUntilStart = event.scheduledStartTimestamp - now;
+                if (msUntilStart > EVENT_REMINDER_WINDOW_MS || msUntilStart <= 0) continue;
+
+                let subscribers;
+
+                try {
+                    subscribers = await event.fetchSubscribers();
+                } catch (error) {
+                    console.error(`Failed to fetch subscribers for event ${event.id}:`, error);
+                    continue; // Retry next tick rather than marking it reminded on a failed fetch.
+                }
+
+                for (const { user } of subscribers.values()) {
+                    if (user.bot) continue;
+
+                    try {
+                        await user.send(
+                            `⏰ **${event.name}** starts in about 15 minutes!\n\nSee you there.`
+                        );
+                    } catch (dmError) {
+                        if (dmError.code === DM_CLOSED_ERROR_CODE) {
+                            console.log(`Closed DMs: ${user.tag} could not receive a reminder for "${event.name}"`);
+                            await announceClosedDMs(guildId, user.id, event.name);
+                        } else {
+                            console.error(`Unexpected error sending event reminder DM to ${user.tag}:`, dmError);
+                        }
+                    }
+                }
+
+                eventReminderState.remindedOccurrences[occurrenceKey] = event.scheduledStartTimestamp;
+                stateChanged = true;
+
+                console.log(`Event reminder: DM'd ${subscribers.size} subscriber(s) for "${event.name}" in ${guild.name}`);
+            }
+        }
+
+        if (stateChanged) {
+            await saveEventReminderState();
+        }
+    } catch (error) {
+        console.error('Error during event reminder sweep:', error);
+    } finally {
+        eventReminderSweepRunning = false;
+    }
 }
 
 // Message handler
@@ -1944,6 +2155,11 @@ async function kickApplicant(member, kickReason, log) {
 // Concurrent opted-in players before a game counts as a squad worth announcing.
 const RADAR_MIN_SQUAD = 2;
 
+// Absorbs a brief presence drop (a loading screen, a match transition, a game's Rich
+// Presence hiccup) without treating it as the session actually ending. Tune down if
+// resets feel sluggish, up if flicker still gets through.
+const RADAR_RESET_GRACE_MS = 5 * 60 * 1000;
+
 // Seeded onto every radar post by the bot; reacting with it grants the opt-in role.
 const RADAR_EMOJI = '🔔';
 
@@ -2170,7 +2386,7 @@ async function applyRadarPresence(guildId, member, currentGames) {
         let entry = games.get(gameName);
 
         if (!entry) {
-            entry = { activeMembers: new Set(), peak: 0, dmSent: false };
+            entry = { activeMembers: new Set(), peak: 0, dmSent: false, resetTimer: null };
             games.set(gameName, entry);
         }
 
@@ -2195,19 +2411,43 @@ async function evaluateRadarGame(guildId, gameName) {
     const count = entry.activeMembers.size;
 
     if (count < RADAR_MIN_SQUAD) {
-        // Nobody playing it at all: drop the entry so the map doesn't collect dead games.
-        if (count === 0) {
-            games.delete(gameName);
-            return;
+        // Don't reset the instant the count dips. A member's activity can blink off for a
+        // few seconds and come right back, and resetting on that made the same two people
+        // re-announce as a brand new match. Schedule the reset instead, so a quick
+        // recovery (below, in the at-or-above-threshold path) can cancel it.
+        if (!entry.resetTimer) {
+            entry.resetTimer = setTimeout(() => {
+                const currentGames = radarGamesFor(guildId);
+                const currentEntry = currentGames.get(gameName);
+                if (!currentEntry) return;
+
+                currentEntry.resetTimer = null;
+
+                if (currentEntry.activeMembers.size === 0) {
+                    // Nobody playing it at all: drop the entry so the map doesn't collect
+                    // dead games.
+                    currentGames.delete(gameName);
+                } else if (currentEntry.activeMembers.size < RADAR_MIN_SQUAD) {
+                    // Still short of a squad after the full grace period, so the session
+                    // really did end. Keep the roster - the next person to start this game
+                    // has to be able to see who's already on it - but forget the streak, so
+                    // a rise back to 2+ counts as brand new.
+                    currentEntry.peak = 0;
+                    currentEntry.dmSent = false;
+                }
+                // else: recovered to threshold while this timer was pending. The recovering
+                // presenceUpdate already cancelled it, so this shouldn't normally be
+                // reached, but it's a safe no-op if the timing overlaps.
+            }, RADAR_RESET_GRACE_MS);
         }
 
-        // One player left. Keep the roster - the next person to start this game has to be
-        // able to see them, or a squad could never form - but forget the streak, so a rise
-        // back to 2+ counts as brand new. This is the reset rule that replaces any
-        // time-based cooldown.
-        entry.peak = 0;
-        entry.dmSent = false;
         return;
+    }
+
+    // Back at or above threshold: cancel any pending reset from a brief dip.
+    if (entry.resetTimer) {
+        clearTimeout(entry.resetTimer);
+        entry.resetTimer = null;
     }
 
     const memberIds = [...entry.activeMembers];
@@ -2280,10 +2520,14 @@ async function postRadarEmbed(guildId, gameName, count) {
             return;
         }
 
+        // The leading "# " renders the headcount line as a Discord heading. RADAR_CTA
+        // stays a plain field so it keeps rendering at its normal size underneath.
         const embed = new EmbedBuilder()
             .setColor(RADAR_COLORS[radarColorIndex % RADAR_COLORS.length])
-            .setDescription(pickPhrase(count, gameName))
-            .addFields({ name: '​', value: RADAR_CTA });
+            .setDescription(`# ${pickPhrase(count, gameName)}`)
+            .addFields({ name: '​', value: RADAR_CTA })
+            .setFooter({ text: 'Vice Radar 🌴' })
+            .setTimestamp();
 
         radarColorIndex++;
 

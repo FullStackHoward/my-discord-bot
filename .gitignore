@@ -4,6 +4,7 @@ node_modules/
 
 # Runtime state, not source
 application-server-state.json
+event-reminder-state.json
 
 # Optional local files
 .DS_Store
