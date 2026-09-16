@@ -2520,11 +2520,11 @@ async function postRadarEmbed(guildId, gameName, count) {
             return;
         }
 
-        // The leading "# " renders the headcount line as a Discord heading. RADAR_CTA
+        // The leading "## " renders the headcount line as a Discord heading. RADAR_CTA
         // stays a plain field so it keeps rendering at its normal size underneath.
         const embed = new EmbedBuilder()
             .setColor(RADAR_COLORS[radarColorIndex % RADAR_COLORS.length])
-            .setDescription(`# ${pickPhrase(count, gameName)}`)
+            .setDescription(`## ${pickPhrase(count, gameName)}`)
             .addFields({ name: '​', value: RADAR_CTA })
             .setFooter({ text: 'Vice Radar 🌴' })
             .setTimestamp();
