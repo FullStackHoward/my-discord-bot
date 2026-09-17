@@ -320,13 +320,37 @@ Enabled on the Bot page of the Discord Developer Portal:
 
 ```
 vice-community-bot/
-├── index.js        # Main bot file
-├── .env            # Environment variables (never committed)
+├── index.js                        # Entrypoint: client login and listener wiring only
+├── lib/
+│   ├── client.js                   # The shared Client instance (intents, partials)
+│   ├── config.js                   # Everything derived from .env
+│   ├── utils.js                    # Guild/role/permission helpers
+│   ├── staff-log.js                # Staff log channel embeds
+│   ├── verification.js             # Verification + Application Server exit (Feature A)
+│   ├── tier-sync.js                # Cross-server subscription tiers (Feature B)
+│   ├── reconciliation.js           # Hourly reconciliation (Feature C)
+│   ├── application-sweep.js        # Application Server lifecycle (Feature D)
+│   ├── announcements.js            # Posting to the Vicers site API
+│   ├── events.js                   # Event mirroring, RSVP DMs, 15-minute reminders
+│   ├── slash-commands.js           # Slash command definitions and routing
+│   ├── prefix-commands.js          # !verify / !announce routing
+│   └── radar/
+│       ├── index.js                # Vice Radar (Feature E)
+│       └── phrase-bank.js          # Loads data/radar-phrases.json on every pick
+├── data/
+│   └── radar-phrases.json          # Vice Radar copy (never committed; edit live on the server)
+├── .env                            # Environment variables (never committed)
 ├── application-server-state.json   # Runtime reminder state (never committed)
+├── event-reminder-state.json       # Runtime reminder state (never committed)
 ├── .gitignore
 ├── package.json
 └── README.md
 ```
+
+`data/radar-phrases.json` is read fresh on every Vice Radar post, so editing it on the
+server changes the copy on the next post with no restart and no redeploy. It is not in
+version control, so keep a master copy elsewhere; if it is missing or malformed, Radar
+logs a warning and falls back to three built-in phrases rather than going silent.
 
 ---
 
