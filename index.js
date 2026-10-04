@@ -1,7 +1,19 @@
 require('dotenv').config();
 
 const client = require('./lib/client');
-const { BOT_TOKEN, RECONCILIATION_INTERVAL_MS, APPLICATION_SWEEP_INTERVAL_MS, APPLICATION_SWEEP_START_DELAY_MS, EVENT_REMINDER_CHECK_INTERVAL_MS, SERVER_CONFIGS, LOG_COLORS } = require('./lib/config');
+const {
+    BOT_TOKEN,
+    RECONCILIATION_INTERVAL_MS,
+    APPLICATION_SWEEP_INTERVAL_MS,
+    APPLICATION_SWEEP_START_DELAY_MS,
+    EVENT_REMINDER_CHECK_INTERVAL_MS,
+    ACTIVITY_STATE_FLUSH_INTERVAL_MS,
+    ACTIVITY_VOICE_TICK_INTERVAL_MS,
+    ACTIVITY_ROLE_SWEEP_INTERVAL_MS,
+    ACTIVITY_ROLE_SWEEP_START_DELAY_MS,
+    SERVER_CONFIGS,
+    LOG_COLORS
+} = require('./lib/config');
 const { sendStaffLogToAllServers, errorField } = require('./lib/staff-log');
 const { warnAboutMissingConfig } = require('./lib/utils');
 const verification = require('./lib/verification');
@@ -12,6 +24,9 @@ const events = require('./lib/events');
 const slashCommands = require('./lib/slash-commands');
 const prefixCommands = require('./lib/prefix-commands');
 const radar = require('./lib/radar');
+const activity = require('./lib/activity');
+const activitySeeding = require('./lib/activity/seeding');
+const activityRoleSweep = require('./lib/activity/role-sweep');
 
 // Bot ready event
 client.once('ready', () => {
@@ -45,6 +60,31 @@ client.once('ready', () => {
     setInterval(() => {
         void events.runEventReminderSweep();
     }, EVENT_REMINDER_CHECK_INTERVAL_MS);
+
+    // Activity tracking. State first, then in-progress voice sessions, then the periodic
+    // jobs. Seeding runs in the background so a long backfill never blocks startup.
+    activity.loadActivityState();
+    activity.initVoiceSessions();
+    void activity.announceActivityStartup();
+
+    setInterval(() => {
+        void activity.runVoiceTick();
+    }, ACTIVITY_VOICE_TICK_INTERVAL_MS);
+
+    setInterval(() => {
+        activity.flushActivityState();
+    }, ACTIVITY_STATE_FLUSH_INTERVAL_MS);
+
+    void activitySeeding.runSeedingForAllGuilds();
+
+    // Offset from the other full-member-list jobs: reconciliation runs at boot and the
+    // application sweep 5 minutes in.
+    setTimeout(() => {
+        void activityRoleSweep.runActivityRoleSweep();
+        setInterval(() => {
+            void activityRoleSweep.runActivityRoleSweep();
+        }, ACTIVITY_ROLE_SWEEP_INTERVAL_MS);
+    }, ACTIVITY_ROLE_SWEEP_START_DELAY_MS);
 });
 
 // ---------------------------------------------------------------------------
@@ -60,6 +100,12 @@ client.on('presenceUpdate', (oldPresence, newPresence) => {
     void radar.handlePresenceUpdate(newPresence);
 });
 client.on('guildMemberRemove', radar.handleGuildMemberRemove);
+
+// Activity tracking listeners. messageCreate is a second, separate listener rather than
+// a branch inside the prefix-command one, so neither feature can break the other.
+client.on('messageCreate', activity.handleMessageCreate);
+client.on('voiceStateUpdate', activity.handleVoiceStateUpdate);
+client.on('guildMemberRemove', activity.handleGuildMemberRemove);
 
 // Error handling
 client.on('error', error => {
@@ -85,6 +131,24 @@ process.on('unhandledRejection', error => {
         footer: 'If this repeats, check the PM2 log on the server.'
     });
 });
+
+// Adding a signal handler replaces Node's default exit, so each one has to flush the
+// activity state and then exit explicitly. Without this, a PM2 restart during a deploy
+// would drop up to a minute of recorded activity.
+function shutdown(signal) {
+    console.log(`Received ${signal}, flushing activity state before exit.`);
+
+    try {
+        activity.flushActivityState(true);
+    } catch (error) {
+        console.error('Failed to flush activity state on shutdown:', error);
+    }
+
+    process.exit(0);
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 // Login to Discord
 client.login(BOT_TOKEN);

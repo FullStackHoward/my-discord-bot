@@ -159,6 +159,24 @@ VG_RADAR_CHANNEL=
 VC_RADAR_ROLE=
 VC_RADAR_CHANNEL=
 
+# Activity roles (Active / Inactive labeling and /purge)
+# A server only labels activity if BOTH of its entries are filled in.
+# Leave a pair blank to keep activity labeling off in that server.
+VG_ACTIVE_ROLE=
+VG_INACTIVE_ROLE=
+VC_ACTIVE_ROLE=
+VC_INACTIVE_ROLE=
+
+# Activity tuning. All optional; the defaults shown are used when unset.
+# ACTIVITY_ROLES_ENABLED must be the literal string "true" before any role is applied.
+ACTIVITY_ROLES_ENABLED=false
+ACTIVITY_THRESHOLD_DAYS=30
+ACTIVITY_NEW_MEMBER_GRACE_DAYS=14
+ACTIVITY_VOICE_MIN_MINUTES=5
+ACTIVITY_LOG_INDIVIDUAL_MAX=10
+ACTIVITY_IGNORED_CHANNELS=
+PURGE_REAPPLY_URL=https://discord.vicers.net
+
 # Reference only, not read by the reconciliation logic
 VG_WAITING_ROOM_CHANNEL=
 VC_WAITING_ROOM_CHANNEL=
@@ -249,6 +267,65 @@ State is held in memory only and rebuilds itself within seconds of a restart as 
 1. The **Presence Intent** must be enabled on the Bot page of the Discord Developer Portal. Without it presence events never fire — silently, with no error.
 2. Each member must have **Settings → Activity Privacy → "Display current activity as a status message"** turned on. With it off, Discord shows nobody what they're playing, the bot included. There is no way to detect or work around this from the bot side.
 
+### Activity Roles (Active / Inactive)
+
+A daily sweep labels every eligible member on the two main servers with one of two
+hoisted roles, so active members group above inactive ones on the member list.
+
+**What counts as activity:** messages in guild channels (threads and forum posts
+included), and voice or stage sessions of at least `ACTIVITY_VOICE_MIN_MINUTES`. A voice
+session in the channel of a currently running scheduled event is recorded as event
+attendance. Presence, reactions, slash commands, Vice Radar, and marking "Interested" on
+an event all deliberately **do not** count.
+
+**Who is exempt** (checked in this order, carrying neither role): bots, the server owner
+and `VICER_ADMIN`, staff, subscribers, anyone added with `/purge-exempt`, and members who
+joined within `ACTIVITY_NEW_MEMBER_GRACE_DAYS`.
+
+**Seeding:** on first run the bot backfills message history back to the label window, so
+labels are meaningful on day one. It is resumable, checkpointing after every channel.
+Discord exposes no voice history, so voice activity cannot be backfilled — a member whose
+only recent activity was voice will look inactive until live tracking catches them.
+
+**Tracking-only mode** is the default (`ACTIVITY_ROLES_ENABLED=false`): signals are
+recorded and the daily sweep posts what it *would* do, without touching a single role.
+Set the flag to `true` and restart to let it label for real.
+
+**Instant re-promotion:** a member holding Inactive who posts or joins voice is moved back
+to Active within seconds, rather than waiting for the next daily sweep.
+
+### Inactive Purge (`/purge`)
+
+Owner-only, discretionary, and **never automatic**. `/purge` removes members who
+currently hold that server's Inactive role — there is no separate purge window and no
+`days` option. The 30-day label is the only time-based rule; when to act on it is the
+owner's call.
+
+Nothing is removed without an explicit confirmation:
+
+1. `/purge` always produces a **dry run** first, listing candidates longest-inactive
+   first, with each skip category counted.
+2. Exempt members, anyone who now reads as active despite a stale Inactive role, and
+   anyone the bot cannot remove are all held back and listed separately.
+3. A danger-styled **Confirm** button (plus Cancel) is attached, usable only by the owner
+   who generated that preview, expiring after 5 minutes.
+4. On confirm, candidates are **recomputed** and only the intersection with the preview is
+   acted on, so anyone who became active, got exempted, or left in between is dropped.
+5. Each member is DM'd (by default), then removed, with a log line written as they are
+   processed.
+
+**By design there is no automatic removal anywhere in this feature:** no timer, flag,
+env var, or startup path can trigger a purge or skip the confirmation, and a bot restart
+mid-purge does not resume it. Holding the Inactive role is a label and nothing more.
+
+Related commands, both owner-only:
+
+- `/activity summary [list]` — counts of active, inactive and exempt (by reason), seeding
+  status, and how many members `/purge` would currently list.
+- `/activity user <member>` — one member's status, last activity and last signal.
+- `/purge-exempt add|remove|list` — an exempted member carries neither role and is never
+  purged, exactly like staff.
+
 ### Staff Activity Log
 
 Each of the three servers has its own bot log channel (`VG_LOG_CHANNEL`, `VC_LOG_CHANNEL`, `APP_LOG_CHANNEL`). Member lifecycle events are posted there as color-coded embeds so staff can scan a channel at a glance:
@@ -302,17 +379,35 @@ When inviting the bot to a server, the following permissions are required:
 - Embed Links (required in every log channel — all staff logs are embeds)
 - Read Message History
 - Manage Events (required for planned event sync feature)
-- Kick Members (required on the Application Server for the auto-kick)
-- Add Reactions (required in the Vice Radar channel, so the bot can seed the 🔔 opt-in reaction)
+- Kick Members (required on the Application Server for the auto-kick, and on the main servers for `/purge`)
+- Attach Files (required in every log channel — long activity and purge lists are posted as `.txt` attachments)
+- Connect / View Channels on voice and stage channels (so voice sessions are visible to activity tracking)
 
-The bot's own role must sit **above** the verified, tier, and Vice Radar roles for it to grant them.
+The bot currently has Administrator on the servers, which covers all of the above.
+Administrator does **not** override role hierarchy, so the bot's own role must still sit
+**above** the verified, tier, Vice Radar, and Active/Inactive roles for it to manage them,
+and above a member's top role to remove them.
 
 ### Privileged Gateway Intents
 
 Enabled on the Bot page of the Discord Developer Portal:
 
-- **Server Members Intent** — member joins, role syncing, reconciliation
+- **Server Members Intent** — member joins, role syncing, reconciliation, activity sweeps
+- **Message Content Intent** — prefix commands and activity message tracking
 - **Presence Intent** — Vice Radar only; leave it off and the rest of the bot is unaffected
+
+`GuildVoiceStates` (activity voice tracking) and `GuildScheduledEvents` are **not**
+privileged and need no Developer Portal toggle — the code requesting them is enough.
+
+### Server setup for activity roles (manual, not code)
+
+1. Create the Active and Inactive roles with **Display role members separately** on for
+   both, and place Active above Inactive.
+2. Discord groups each member under their highest hoisted role, so where Active and
+   Inactive sit relative to staff, tier, verified and Radar roles decides which heading
+   people appear under. Place them deliberately.
+3. The bot's top role must sit above both.
+4. Add the activity env vars to the server `.env` by hand — it is not in version control.
 
 ---
 
@@ -334,14 +429,22 @@ vice-community-bot/
 │   ├── events.js                   # Event mirroring, RSVP DMs, 15-minute reminders
 │   ├── slash-commands.js           # Slash command definitions and routing
 │   ├── prefix-commands.js          # !verify / !announce routing
-│   └── radar/
-│       ├── index.js                # Vice Radar (Feature E)
-│       └── phrase-bank.js          # Loads data/radar-phrases.json on every pick
+│   ├── radar/
+│   │   ├── index.js                # Vice Radar (Feature E)
+│   │   └── phrase-bank.js          # Loads data/radar-phrases.json on every pick
+│   └── activity/
+│       ├── index.js                # State, signal capture, classification, role swaps
+│       ├── seeding.js              # One-time message-history backfill (resumable)
+│       ├── role-sweep.js           # Daily Active/Inactive labeling
+│       ├── purge.js                # /purge and /purge-exempt (the only removal path)
+│       └── report.js               # /activity
 ├── data/
 │   └── radar-phrases.json          # Vice Radar copy (never committed; edit live on the server)
 ├── .env                            # Environment variables (never committed)
 ├── application-server-state.json   # Runtime reminder state (never committed)
 ├── event-reminder-state.json       # Runtime reminder state (never committed)
+├── activity-state.json             # Activity timestamps and exemptions (never committed)
+├── purge-log.jsonl                 # Permanent per-member purge record (never committed)
 ├── .gitignore
 ├── package.json
 └── README.md
