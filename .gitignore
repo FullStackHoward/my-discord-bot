@@ -6,6 +6,9 @@ node_modules/
 application-server-state.json
 event-reminder-state.json
 data/radar-phrases.json
+activity-state.json
+activity-state.json.corrupt-*
+purge-log.jsonl
 
 # Optional local files
 .DS_Store
