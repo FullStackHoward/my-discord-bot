@@ -291,8 +291,11 @@ only recent activity was voice will look inactive until live tracking catches th
 recorded and the daily sweep posts what it *would* do, without touching a single role.
 Set the flag to `true` and restart to let it label for real.
 
-**Instant re-promotion:** a member holding Inactive who posts or joins voice is moved back
-to Active within seconds, rather than waiting for the next daily sweep.
+**Instant labeling:** a member who posts or completes a qualifying voice session is
+labeled within seconds rather than waiting for the next daily sweep. This covers both a
+member carrying Inactive (moved back to Active) and a member carrying no label yet
+(labeled for the first time). Exempt members are left alone, and anyone already carrying
+Active short-circuits on a single cache lookup, so ordinary chatter costs no API calls.
 
 ### Inactive Purge (`/purge`)
 
