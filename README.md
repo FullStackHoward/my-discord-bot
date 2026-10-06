@@ -279,8 +279,15 @@ attendance. Presence, reactions, slash commands, Vice Radar, and marking "Intere
 an event all deliberately **do not** count.
 
 **Who is exempt** (checked in this order, carrying neither role): bots, the server owner
-and `VICER_ADMIN`, staff, subscribers, anyone added with `/purge-exempt`, and members who
-joined within `ACTIVITY_NEW_MEMBER_GRACE_DAYS`.
+and `VICER_ADMIN`, staff, subscribers, boosters, anyone added with `/purge-exempt`, and
+members who joined within `ACTIVITY_NEW_MEMBER_GRACE_DAYS`.
+
+Boosting is read live off the member on every classification (`premiumSince`, falling back
+to the guild's managed booster role), so a member who stops boosting is classified on
+activity again from their next evaluation — there is nothing to persist or clean up.
+Subscriber exemption depends on the `VG_TIER_*` / `VC_TIER_*` role IDs being set:
+`/purge` refuses to run in a server where none of them are configured, because
+subscribers could not be recognized and would appear purgeable.
 
 **Seeding:** on first run the bot backfills message history back to the label window, so
 labels are meaningful on day one. It is resumable, checkpointing after every channel.
