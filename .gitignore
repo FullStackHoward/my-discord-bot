@@ -9,6 +9,7 @@ data/radar-phrases.json
 activity-state.json
 activity-state.json.corrupt-*
 purge-log.jsonl
+gamer-id-log.jsonl
 
 # Optional local files
 .DS_Store

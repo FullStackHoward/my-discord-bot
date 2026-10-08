@@ -11,6 +11,8 @@ const {
     ACTIVITY_VOICE_TICK_INTERVAL_MS,
     ACTIVITY_ROLE_SWEEP_INTERVAL_MS,
     ACTIVITY_ROLE_SWEEP_START_DELAY_MS,
+    GAMER_ID_RECONCILE_INTERVAL_MS,
+    GAMER_ID_RECONCILE_START_DELAY_MS,
     SERVER_CONFIGS,
     LOG_COLORS
 } = require('./lib/config');
@@ -27,6 +29,7 @@ const radar = require('./lib/radar');
 const activity = require('./lib/activity');
 const activitySeeding = require('./lib/activity/seeding');
 const activityRoleSweep = require('./lib/activity/role-sweep');
+const gamerId = require('./lib/gamer-id');
 
 // Bot ready event
 client.once('ready', () => {
@@ -85,6 +88,18 @@ client.once('ready', () => {
             void activityRoleSweep.runActivityRoleSweep();
         }, ACTIVITY_ROLE_SWEEP_INTERVAL_MS);
     }, ACTIVITY_ROLE_SWEEP_START_DELAY_MS);
+
+    // Gamer ID forum cleanup. The daily reconcile is the safety net for leaves the bot was
+    // offline for; 35 minutes keeps it clear of the other full-member-list jobs, which run
+    // at boot, +5 and +20 minutes.
+    void gamerId.announceGamerIdStartup();
+
+    setTimeout(() => {
+        void gamerId.runGamerIdReconcile();
+        setInterval(() => {
+            void gamerId.runGamerIdReconcile();
+        }, GAMER_ID_RECONCILE_INTERVAL_MS);
+    }, GAMER_ID_RECONCILE_START_DELAY_MS);
 });
 
 // ---------------------------------------------------------------------------
@@ -106,6 +121,11 @@ client.on('guildMemberRemove', radar.handleGuildMemberRemove);
 client.on('messageCreate', activity.handleMessageCreate);
 client.on('voiceStateUpdate', activity.handleVoiceStateUpdate);
 client.on('guildMemberRemove', activity.handleGuildMemberRemove);
+
+// A third listener on the same event, alongside the radar and activity ones: a departing
+// member's gamer ID posts are queued for removal, debounced so a burst of leaves (a /purge
+// run, say) produces one scan rather than one per person.
+client.on('guildMemberRemove', gamerId.handleGuildMemberRemove);
 
 // Error handling
 client.on('error', error => {
