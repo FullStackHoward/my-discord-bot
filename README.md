@@ -177,12 +177,6 @@ ACTIVITY_LOG_INDIVIDUAL_MAX=10
 ACTIVITY_IGNORED_CHANNELS=
 PURGE_REAPPLY_URL=https://discord.vicers.net
 
-# Master switch for the DM /purge sends before removing someone. Unset means enabled.
-# Only the exact strings "true" and "false" are understood; anything else is treated as
-# DISABLED and warned about at boot, so a typo can never cause unwanted DMs.
-# Requires a restart to take effect.
-PURGE_DM_ENABLED=true
-
 # Activity exception roles. Holding any of these exempts a member from activity labeling
 # entirely, like staff. All optional; each role belongs to exactly one server and is only
 # matched in that server.
@@ -200,10 +194,6 @@ VC_GAMER_ROLE=
 # Gamer ID forum cleanup (Vice Gamers only). Off entirely if the forum is unset.
 # VG_GAMER_ID_CHANNEL is accepted as an alias for VG_GAMER_ID_FORUM.
 VG_GAMER_ID_FORUM=
-
-# Must be exactly "true" before the leave listener or the daily reconcile delete anything.
-# Anything else means report-only. /gamer-id-sweep always confirms first regardless.
-GAMER_ID_CLEANUP_ENABLED=false
 
 # Reference only, not read by the reconciliation logic
 VG_WAITING_ROOM_CHANNEL=
@@ -371,9 +361,9 @@ Nothing is removed without an explicit confirmation:
 4. On confirm, candidates are **recomputed** and only the intersection with the preview is
    acted on, so anyone who became active, got exempted, or left in between is dropped.
 5. Each member is DM'd (by default), then removed, with a log line written as they are
-   processed. `PURGE_DM_ENABLED=false` turns the DM off for every purge; the `send_dm` option
-   can suppress DMs but can never force them on while the env switch is off. Changing the
-   variable needs a bot restart, and the preview always states which setting is in effect.
+   processed. The `send_dm` option on `/purge` is **required**, so whether to DM is an
+   explicit decision on every run rather than a default that can be forgotten — and it needs
+   no restart or config change. The preview always states which way it is set.
 
 **By design there is no automatic removal anywhere in this feature:** no timer, flag,
 env var, or startup path can trigger a purge or skip the confirmation, and a bot restart
@@ -411,14 +401,23 @@ This deletes **messages only** — never a member, never a role. Three triggers 
 3. **`/gamer-id-sweep`** (owner only), the one-time retroactive pass for everyone who had already
    left before the feature existed. Never needed again after rollout.
 
+`/gamer-id-cleanup enable|disable|status` (owner only) controls whether triggers 1 and 2 actually
+delete. Trigger 3 always previews and always deletes on Confirm, whatever that is set to.
+
 Safeguards:
 
-- **Report-only by default.** With `GAMER_ID_CLEANUP_ENABLED` unset or not exactly `true`, every
-  automatic path scans and reports what it *would* delete, and deletes nothing.
+- **Automatic cleanup is off until you switch it on**, with `/gamer-id-cleanup enable`. While
+  it is off, the leave listener and the daily reconcile scan and report what they *would*
+  delete, and delete nothing. The setting is persisted, so it survives restarts, and
+  `/gamer-id-cleanup status` shows the current state and who last changed it. It defaults to
+  off whenever there is no state to read — a fresh server, a deleted or unreadable file —
+  since report-only is always the safe direction.
 - **`/gamer-id-sweep` always previews first**, with a per-thread breakdown and an attached list,
   and deletes nothing without a Confirm press from the owner who generated it. On confirm the
   scan is re-run rather than trusting the preview, so anyone who rejoined in between keeps their
-  posts. Cancel and the 5-minute expiry both delete nothing.
+  posts. Cancel and the 5-minute expiry both delete nothing. It **does** delete on Confirm even
+  while automatic cleanup is off — that is the point of the one-time retroactive pass: you review
+  it and run it before ever switching the automatic paths on.
 - **A short member list aborts the run.** If the member fetch fails, or comes back below 90% of
   the server's own count, the run stops without deleting — a truncated list would make current
   members look departed, which is the one genuinely dangerous failure here.
@@ -542,7 +541,8 @@ vice-community-bot/
 │   │   └── report.js               # /activity
 │   └── gamer-id/
 │       ├── index.js                # Forum scan, delete logic, leave debounce, reconcile
-│       └── command.js              # /gamer-id-sweep preview and confirm
+│       ├── state.js                # Persisted on/off setting for the automatic paths
+│       └── command.js              # /gamer-id-sweep and /gamer-id-cleanup
 ├── data/
 │   └── radar-phrases.json          # Vice Radar copy (never committed; edit live on the server)
 ├── .env                            # Environment variables (never committed)
@@ -551,6 +551,7 @@ vice-community-bot/
 ├── activity-state.json             # Activity timestamps and exemptions (never committed)
 ├── purge-log.jsonl                 # Permanent per-member purge record (never committed)
 ├── gamer-id-log.jsonl              # Permanent per-message deletion record (never committed)
+├── gamer-id-state.json             # Gamer ID cleanup on/off setting (never committed)
 ├── .gitignore
 ├── package.json
 └── README.md
