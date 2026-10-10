@@ -177,6 +177,34 @@ ACTIVITY_LOG_INDIVIDUAL_MAX=10
 ACTIVITY_IGNORED_CHANNELS=
 PURGE_REAPPLY_URL=https://discord.vicers.net
 
+# Master switch for the DM /purge sends before removing someone. Unset means enabled.
+# Only the exact strings "true" and "false" are understood; anything else is treated as
+# DISABLED and warned about at boot, so a typo can never cause unwanted DMs.
+# Requires a restart to take effect.
+PURGE_DM_ENABLED=true
+
+# Activity exception roles. Holding any of these exempts a member from activity labeling
+# entirely, like staff. All optional; each role belongs to exactly one server and is only
+# matched in that server.
+VG_EVENT_COORDINATOR_ROLE=
+VG_RECRUITER_ROLE=
+VG_CONTRIBUTOR_ROLE=
+VG_CREATOR_ROLE=
+VC_STAR_ARTIST_ROLE=
+VC_STAR_DEV_ROLE=
+VC_STAR_MUSICIAN_ROLE=
+VC_STAR_CONTENT_CREATOR_ROLE=
+VC_STAR_WRITER_ROLE=
+VC_GAMER_ROLE=
+
+# Gamer ID forum cleanup (Vice Gamers only). Off entirely if the forum is unset.
+# VG_GAMER_ID_CHANNEL is accepted as an alias for VG_GAMER_ID_FORUM.
+VG_GAMER_ID_FORUM=
+
+# Must be exactly "true" before the leave listener or the daily reconcile delete anything.
+# Anything else means report-only. /gamer-id-sweep always confirms first regardless.
+GAMER_ID_CLEANUP_ENABLED=false
+
 # Reference only, not read by the reconciliation logic
 VG_WAITING_ROOM_CHANNEL=
 VC_WAITING_ROOM_CHANNEL=
@@ -279,8 +307,29 @@ attendance. Presence, reactions, slash commands, Vice Radar, and marking "Intere
 an event all deliberately **do not** count.
 
 **Who is exempt** (checked in this order, carrying neither role): bots, the server owner
-and `VICER_ADMIN`, staff, subscribers, boosters, anyone added with `/purge-exempt`, and
-members who joined within `ACTIVITY_NEW_MEMBER_GRACE_DAYS`.
+and `VICER_ADMIN`, staff, subscribers, boosters, holders of a configured **exception role**,
+anyone added with `/purge-exempt`, and members who joined within
+`ACTIVITY_NEW_MEMBER_GRACE_DAYS`.
+
+**Exception roles** are the ten `VG_*` / `VC_*` role IDs above — Event Coordinator, Recruiter,
+Star Artist and so on. Each is matched only in its own server, never across servers. Because
+ten IDs are entered by hand, every configured ID is checked at boot: anything that is not a
+valid snowflake, or does not resolve to a role in that server, is named by its exact env var in
+a staff-log warning — including when the ID turns out to be a role in the *other* server, which
+is the likeliest mistake. `/activity user` names which role granted the exemption.
+
+**Active in either server counts as active in both.** A member active in one main server within
+the window is exempt in the other rather than labeled Inactive there, so they are never listed
+by `/purge` in the server they happen to be quiet in. Someone active in *both* keeps the Active
+role in both — the check runs after their own activity, not before it, so it never strips a
+label they earned. Someone quiet in both is Inactive in both and purgeable in both. The check
+reads the other server's raw activity record, never its classification, so the two servers
+cannot end up asking each other in a loop.
+
+`/purge` **refuses to run** when the other main server cannot be reached, its member list cannot
+be fetched, or its seeding is not complete — being wrong there would mean removing someone who
+is active. The daily sweep instead warns and carries on, since the worst a sweep can do is leave
+an Inactive label in place.
 
 Boosting is read live off the member on every classification (`premiumSince`, falling back
 to the guild's managed booster role), so a member who stops boosting is classified on
@@ -322,7 +371,9 @@ Nothing is removed without an explicit confirmation:
 4. On confirm, candidates are **recomputed** and only the intersection with the preview is
    acted on, so anyone who became active, got exempted, or left in between is dropped.
 5. Each member is DM'd (by default), then removed, with a log line written as they are
-   processed.
+   processed. `PURGE_DM_ENABLED=false` turns the DM off for every purge; the `send_dm` option
+   can suppress DMs but can never force them on while the env switch is off. Changing the
+   variable needs a bot restart, and the preview always states which setting is in effect.
 
 **By design there is no automatic removal anywhere in this feature:** no timer, flag,
 env var, or startup path can trigger a purge or skip the confirmation, and a bot restart
@@ -335,6 +386,46 @@ Related commands, both owner-only:
 - `/activity user <member>` — one member's status, last activity and last signal.
 - `/purge-exempt add|remove|list` — an exempted member carries neither role and is never
   purged, exactly like staff.
+- `/purge-exempt clear [note_contains]` — the bulk undo. Removes manual exemptions and returns
+  those members to normal labeling, with a preview and a Confirm press, exactly like `/purge`.
+  Use `note_contains` to clear a temporary batch (say everything noted "oct purge hold") while
+  keeping long-term exemptions. This changes **labels only**: members who come back as Inactive
+  stay in the server until a later `/purge` you confirm. The run posts a report plus a recovery
+  JSON of the removed entries, so any of them can be re-added with `/purge-exempt add`.
+
+### Gamer ID Forum Cleanup
+
+Gamer IDs live in a locked forum channel on Vice Gamers, one thread per platform, where members
+post their IDs as replies. When someone is no longer in the server their replies are removed, so
+the threads stay useful.
+
+This deletes **messages only** — never a member, never a role. Three triggers reach the same code:
+
+1. **A member leaving.** Their ID is queued and the scan runs after 60 seconds of quiet, so a
+   burst of departures (a `/purge` run, for instance) produces one scan rather than one per
+   person. Each queued member is re-checked against Discord first, so anyone who rejoined during
+   that window is left alone.
+2. **A daily reconcile**, 35 minutes after boot and every 24 hours after. This is the safety net
+   for leaves the bot was offline for or restarted through, since the listener only fires while
+   connected.
+3. **`/gamer-id-sweep`** (owner only), the one-time retroactive pass for everyone who had already
+   left before the feature existed. Never needed again after rollout.
+
+Safeguards:
+
+- **Report-only by default.** With `GAMER_ID_CLEANUP_ENABLED` unset or not exactly `true`, every
+  automatic path scans and reports what it *would* delete, and deletes nothing.
+- **`/gamer-id-sweep` always previews first**, with a per-thread breakdown and an attached list,
+  and deletes nothing without a Confirm press from the owner who generated it. On confirm the
+  scan is re-run rather than trusting the preview, so anyone who rejoined in between keeps their
+  posts. Cancel and the 5-minute expiry both delete nothing.
+- **A short member list aborts the run.** If the member fetch fails, or comes back below 90% of
+  the server's own count, the run stops without deleting — a truncated list would make current
+  members look departed, which is the one genuinely dangerous failure here.
+- **Bots, webhooks and system messages are never touched.** Pinned replies from departed members
+  are removed like any other.
+- **Message content is never logged.** The staff-log embeds and `gamer-id-log.jsonl` record author,
+  thread and message IDs only, because the content is the thing being removed.
 
 ### Staff Activity Log
 
@@ -390,7 +481,8 @@ When inviting the bot to a server, the following permissions are required:
 - Read Message History
 - Manage Events (required for planned event sync feature)
 - Kick Members (required on the Application Server for the auto-kick, and on the main servers for `/purge`)
-- Attach Files (required in every log channel — long activity and purge lists are posted as `.txt` attachments)
+- Attach Files (required in every log channel — long activity, purge and gamer ID lists are posted as `.txt` attachments)
+- Manage Messages in the gamer ID forum (to delete departed members' posts), plus Manage Threads if a thread has to be unarchived to delete in it
 - Connect / View Channels on voice and stage channels (so voice sessions are visible to activity tracking)
 
 The bot currently has Administrator on the servers, which covers all of the above.
@@ -442,12 +534,15 @@ vice-community-bot/
 │   ├── radar/
 │   │   ├── index.js                # Vice Radar (Feature E)
 │   │   └── phrase-bank.js          # Loads data/radar-phrases.json on every pick
-│   └── activity/
-│       ├── index.js                # State, signal capture, classification, role swaps
-│       ├── seeding.js              # One-time message-history backfill (resumable)
-│       ├── role-sweep.js           # Daily Active/Inactive labeling
-│       ├── purge.js                # /purge and /purge-exempt (the only removal path)
-│       └── report.js               # /activity
+│   ├── activity/
+│   │   ├── index.js                # State, signal capture, classification, role swaps
+│   │   ├── seeding.js              # One-time message-history backfill (resumable)
+│   │   ├── role-sweep.js           # Daily Active/Inactive labeling
+│   │   ├── purge.js                # /purge and /purge-exempt (the only removal path)
+│   │   └── report.js               # /activity
+│   └── gamer-id/
+│       ├── index.js                # Forum scan, delete logic, leave debounce, reconcile
+│       └── command.js              # /gamer-id-sweep preview and confirm
 ├── data/
 │   └── radar-phrases.json          # Vice Radar copy (never committed; edit live on the server)
 ├── .env                            # Environment variables (never committed)
@@ -455,6 +550,7 @@ vice-community-bot/
 ├── event-reminder-state.json       # Runtime reminder state (never committed)
 ├── activity-state.json             # Activity timestamps and exemptions (never committed)
 ├── purge-log.jsonl                 # Permanent per-member purge record (never committed)
+├── gamer-id-log.jsonl              # Permanent per-message deletion record (never committed)
 ├── .gitignore
 ├── package.json
 └── README.md
