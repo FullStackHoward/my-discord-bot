@@ -13,6 +13,8 @@ const {
     ACTIVITY_ROLE_SWEEP_START_DELAY_MS,
     GAMER_ID_RECONCILE_INTERVAL_MS,
     GAMER_ID_RECONCILE_START_DELAY_MS,
+    LOBBY_SWEEP_INTERVAL_MS,
+    LOBBY_SWEEP_START_DELAY_MS,
     SERVER_CONFIGS,
     LOG_COLORS
 } = require('./lib/config');
@@ -30,6 +32,7 @@ const activity = require('./lib/activity');
 const activitySeeding = require('./lib/activity/seeding');
 const activityRoleSweep = require('./lib/activity/role-sweep');
 const gamerId = require('./lib/gamer-id');
+const lobby = require('./lib/lobby');
 
 // Bot ready event
 client.once('ready', () => {
@@ -100,6 +103,24 @@ client.once('ready', () => {
             void gamerId.runGamerIdReconcile();
         }, GAMER_ID_RECONCILE_INTERVAL_MS);
     }, GAMER_ID_RECONCILE_START_DELAY_MS);
+
+    // LFG lobbies. State first, then the board, then the minute sweep. The start offset
+    // keeps the first pass clear of the other boot work.
+    lobby.wireStateHooks();
+    lobby.loadLobbyState();
+    lobby.startFlushInterval();
+    lobby.announceLobbyStartup();
+
+    for (const guildId of lobby.configuredLobbyGuildIds()) {
+        void lobby.upsertBoard(guildId);
+    }
+
+    setTimeout(() => {
+        void lobby.runLobbySweep();
+        setInterval(() => {
+            void lobby.runLobbySweep();
+        }, LOBBY_SWEEP_INTERVAL_MS);
+    }, LOBBY_SWEEP_START_DELAY_MS);
 });
 
 // ---------------------------------------------------------------------------
@@ -126,6 +147,14 @@ client.on('guildMemberRemove', activity.handleGuildMemberRemove);
 // member's gamer ID posts are queued for removal, debounced so a burst of leaves (a /purge
 // run, say) produces one scan rather than one per person.
 client.on('guildMemberRemove', gamerId.handleGuildMemberRemove);
+
+// A fourth listener on the same event: clears the leaver's LFG profile, frees their
+// seats and cancels lobbies they were hosting.
+client.on('guildMemberRemove', lobby.handleGuildMemberRemove);
+
+// A second guildMemberUpdate listener, beside the tier sync one, so the two features
+// stay independent. Only schedules the newcomer LFG prompt.
+client.on('guildMemberUpdate', lobby.handleGuildMemberUpdate);
 
 // Error handling
 client.on('error', error => {
@@ -162,6 +191,12 @@ function shutdown(signal) {
         activity.flushActivityState(true);
     } catch (error) {
         console.error('Failed to flush activity state on shutdown:', error);
+    }
+
+    try {
+        lobby.flushLobbyState(true);
+    } catch (error) {
+        console.error('Failed to flush lobby state on shutdown:', error);
     }
 
     process.exit(0);

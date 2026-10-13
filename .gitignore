@@ -11,6 +11,8 @@ activity-state.json.corrupt-*
 purge-log.jsonl
 gamer-id-log.jsonl
 gamer-id-state.json
+lobby-state.json
+lobby-state.json.corrupt-*
 
 # Optional local files
 .DS_Store
