@@ -195,6 +195,34 @@ VC_GAMER_ROLE=
 # VG_GAMER_ID_CHANNEL is accepted as an alias for VG_GAMER_ID_FORUM.
 VG_GAMER_ID_FORUM=
 
+# LFG lobbies. A server runs them only when its LFG channel is set; with it blank the
+# whole feature is dormant and registers no commands.
+VG_LFG_CHANNEL=
+VG_LFG_DEFAULT_VOICE=
+VC_LFG_CHANNEL=
+VC_LFG_DEFAULT_VOICE=
+
+# LFG tuning. All optional; defaults shown.
+LOBBY_TZ=America/New_York
+LOBBY_BOARD_POST_HOUR=17
+LOBBY_DEFAULT_SEATS=4
+LOBBY_MAX_OPEN_PER_HOST=3
+LOBBY_MAX_OPEN_TOTAL=30
+LOBBY_MAX_DAYS_AHEAD=14
+LOBBY_MIN_LEAD_MINUTES=10
+LOBBY_REMINDER_MINUTES=30
+LOBBY_NOW_EXPIRY_MINUTES=45
+LOBBY_SHOW_MIN_MINUTES=10
+LOBBY_RETENTION_DAYS=90
+LOBBY_CARD_CLEANUP_HOURS=24
+LOBBY_NUDGE_DAILY_CAP=2
+LOBBY_NEWCOMER_PROMPT_HOURS=24
+LOBBY_GAME_MIN_SUBMITTERS=2
+LOBBY_GAME_PRUNE_DAYS=60
+LOBBY_BOARD_RADAR_MIN=2
+LOBBY_BOARD_DEBOUNCE_SECONDS=15
+LOBBY_SERIES_LEAD_HOURS=72
+
 # Reference only, not read by the reconciliation logic
 VG_WAITING_ROOM_CHANNEL=
 VC_WAITING_ROOM_CHANNEL=
@@ -426,6 +454,67 @@ Safeguards:
 - **Message content is never logged.** The staff-log embeds and `gamer-id-log.jsonl` record author,
   thread and message IDs only, because the content is the thing being removed.
 
+### LFG Lobbies
+
+Helps members with awkward schedules line up games together. Everything is bot-side: the
+feature stores its own state in `lobby-state.json` and makes no calls to the Vicers API or
+anything else outside Discord.
+
+**`/availability`** is each member's profile — weekday and weekend time blocks, platforms,
+games, gamertags, and whether they want nudges. The panel saves as you pick, so there is no
+Save button. `/availability timezone` is the one thing that has to be set first: every time
+in the feature is stored as an instant and rendered in each viewer's own local clock, and
+without a zone the bot cannot offer sensible start times.
+
+**`/lobby create`** opens a seat-limited lobby for a time you pick from a list, and
+`/lobby now` opens one starting immediately. Each lobby gets a card in the LFG channel with
+Join, Maybe, Leave and Show tags, plus host controls for seats, note, crossplay, saving a
+template and cancelling. Every card gets its own thread, which is where reminders and
+chatter go.
+
+- **Seats and the waitlist.** Once the seats are gone, joining puts you on the waitlist. If
+  somebody leaves, the first person waiting is moved in, mentioned in the thread and DM'd.
+  Raising the seat count absorbs the waitlist in order.
+- **Maybe** holds no seat and can be upgraded to Join later.
+- **Crossplay off** means a lobby only accepts members whose profile lists its platform.
+  Turning it off later applies to new joins only; anyone already seated keeps their seat.
+- **Gamertags** are opt-in and are shown only to people confirmed in the same lobby, through
+  the Show tags button. They never appear on the public card.
+
+**Reminders** go in the lobby thread, never as DMs: a thread mention cannot produce a
+closed-DM callout. A lobby booked well ahead gets a "still in?" check two hours out, then a
+reminder 30 minutes out, then a "starting now". If a lobby has a minimum player count and it
+is unmet at the reminder, the host gets Run anyway and Cancel buttons — nothing is ever
+cancelled automatically. DMs are used only for waitlist promotion, nudges and the newcomer
+prompt.
+
+**The board** is one message in the LFG channel showing what is on tonight and this week,
+plus a counts-only "Playing now" read from Vice Radar. It is edited in place as lobbies
+change and re-posted once a day at `LOBBY_BOARD_POST_HOUR` so it does not get buried, with
+the weekly digest folded into the Sunday re-post.
+
+**Nudges** are off by default. With them on, a member gets one DM when a lobby is opened for
+a game on their profile at a time inside their availability — capped per day, held outside
+their local 08:00-22:00, and switched off automatically if their DMs are closed.
+
+**After a lobby ends** the host is asked who showed up, pre-filled from who the bot saw in
+the voice channel. Anyone who was there can press Play again, and two or more presses create
+a crew — a small named group you can invite in one go next time with `/lobby create crew:`.
+
+**Games come only from what members submit.** There is no curated list and nothing to
+maintain. A title typed into `/lobby create` or added from the availability panel joins the
+server's registry; spelling variants collapse onto one key, a near-miss asks "did you mean",
+and a title stays private to its submitter until a second member adds it or a lobby uses it.
+`/lobby-games` (owner only) exists for typos and abuse, not routine upkeep.
+
+Owner-only: `/lobby-stats [days]` for fill rate, show rate, repeat participation, nudge
+conversion and the best overlapping availability per game — counts only, no names.
+
+**This feature never moderates anyone.** It creates and edits messages and threads and keeps
+its own state file. It contains no kick, ban, timeout or role change, does not touch
+`lib/activity`, and adds no signal to Active/Inactive labelling — voice sessions already count
+there through the existing tracking.
+
 ### Staff Activity Log
 
 Each of the three servers has its own bot log channel (`VG_LOG_CHANNEL`, `VC_LOG_CHANNEL`, `APP_LOG_CHANNEL`). Member lifecycle events are posted there as color-coded embeds so staff can scan a channel at a glance:
@@ -482,6 +571,7 @@ When inviting the bot to a server, the following permissions are required:
 - Kick Members (required on the Application Server for the auto-kick, and on the main servers for `/purge`)
 - Attach Files (required in every log channel — long activity, purge and gamer ID lists are posted as `.txt` attachments)
 - Manage Messages in the gamer ID forum (to delete departed members' posts), plus Manage Threads if a thread has to be unarchived to delete in it
+- In the LFG channel: Send Messages, Embed Links, Create Public Threads, Send Messages in Threads, Manage Messages (to edit and tidy the board and finished cards), and Read Message History
 - Connect / View Channels on voice and stage channels (so voice sessions are visible to activity tracking)
 
 The bot currently has Administrator on the servers, which covers all of the above.
@@ -493,7 +583,7 @@ and above a member's top role to remove them.
 
 Enabled on the Bot page of the Discord Developer Portal:
 
-- **Server Members Intent** — member joins, role syncing, reconciliation, activity sweeps
+- **Server Members Intent** — member joins, role syncing, reconciliation, activity sweeps, LFG cleanup
 - **Message Content Intent** — prefix commands and activity message tracking
 - **Presence Intent** — Vice Radar only; leave it off and the rest of the bot is unaffected
 
@@ -539,10 +629,24 @@ vice-community-bot/
 │   │   ├── role-sweep.js           # Daily Active/Inactive labeling
 │   │   ├── purge.js                # /purge and /purge-exempt (the only removal path)
 │   │   └── report.js               # /activity
-│   └── gamer-id/
-│       ├── index.js                # Forum scan, delete logic, leave debounce, reconcile
-│       ├── state.js                # Persisted on/off setting for the automatic paths
-│       └── command.js              # /gamer-id-sweep and /gamer-id-cleanup
+│   ├── gamer-id/
+│   │   ├── index.js                # Forum scan, delete logic, leave debounce, reconcile
+│   │   ├── state.js                # Persisted on/off setting for the automatic paths
+│   │   └── command.js              # /gamer-id-sweep and /gamer-id-cleanup
+│   └── lobby/
+│       ├── index.js                # Public surface, listeners, boot announcement
+│       ├── guilds.js               # Which guilds run lobbies
+│       ├── state.js                # Persisted state and the seat/waitlist machine
+│       ├── time.js                 # Zones, slot generation, blocks, weekly recurrence
+│       ├── games.js                # Member-submitted game registry rules
+│       ├── render.js               # Cards, board, panels, DMs (pure builders)
+│       ├── components.js           # Buttons, selects, modals
+│       ├── commands.js             # Command definitions, handlers, autocomplete
+│       ├── sweep.js                # Minute sweep: stages, nudges, series, pruning
+│       ├── board.js                # Board upsert and the daily re-post
+│       ├── crews.js                # Play-again crew formation
+│       ├── stats.js                # /lobby-stats aggregation
+│       └── copy.js                 # Every user-facing string
 ├── data/
 │   └── radar-phrases.json          # Vice Radar copy (never committed; edit live on the server)
 ├── .env                            # Environment variables (never committed)
@@ -552,6 +656,8 @@ vice-community-bot/
 ├── purge-log.jsonl                 # Permanent per-member purge record (never committed)
 ├── gamer-id-log.jsonl              # Permanent per-message deletion record (never committed)
 ├── gamer-id-state.json             # Gamer ID cleanup on/off setting (never committed)
+├── lobby-state.json                # LFG profiles, lobbies, crews, series (never committed)
+├── test/                           # node:test unit tests for the pure LFG modules
 ├── .gitignore
 ├── package.json
 └── README.md
