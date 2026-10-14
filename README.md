@@ -222,6 +222,8 @@ LOBBY_NOW_EXPIRY_MINUTES=45
 LOBBY_SHOW_MIN_MINUTES=10
 LOBBY_RETENTION_DAYS=90
 LOBBY_CARD_CLEANUP_HOURS=24
+# How long a cancelled or expired card lingers. Much shorter, since it never ran.
+LOBBY_DEAD_CARD_CLEANUP_MINUTES=10
 LOBBY_NUDGE_DAILY_CAP=2
 LOBBY_NEWCOMER_PROMPT_HOURS=24
 LOBBY_GAME_MIN_SUBMITTERS=2
@@ -486,6 +488,13 @@ chatter go.
   somebody leaves, the first person waiting is moved in, mentioned in the thread and DM'd.
   Raising the seat count absorbs the waitlist in order.
 - **Maybe** holds no seat and can be upgraded to Join later.
+- **If a lobby is cancelled**, everyone who had signed up — confirmed players, maybes and
+  the waitlist — gets a thread mention and a DM saying which lobby, when it was due and
+  why. The host is not notified about their own cancellation. This covers all three ways a
+  lobby can end up cancelled: the host pressing Cancel, the host leaving the server, or
+  the card being deleted. A cancelled or expired card is removed after
+  `LOBBY_DEAD_CARD_CLEANUP_MINUTES` rather than the full day a completed lobby gets,
+  since it is only clutter.
 - **Crossplay off** means a lobby only accepts members whose profile lists its platform.
   Turning it off later applies to new joins only; anyone already seated keeps their seat.
 - **Gamertags** are opt-in and are shown only to people confirmed in the same lobby, through
