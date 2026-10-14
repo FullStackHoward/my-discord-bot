@@ -193,3 +193,28 @@ test('setLobbyStatus stamps endedAt once', () => {
     state.setLobbyStatus(l, 'cancelled');
     assert.equal(l.endedAt, first, 'not restamped');
 });
+
+test('isAttendanceFinal is true for every settled source', () => {
+    for (const source of ['host', 'voice', 'unconfirmed']) {
+        assert.equal(state.isAttendanceFinal({ attendance: { source } }), true, source);
+    }
+});
+
+test('isAttendanceFinal is false when nothing is settled', () => {
+    assert.equal(state.isAttendanceFinal({ attendance: { source: null } }), false);
+    assert.equal(state.isAttendanceFinal({ attendance: {} }), false);
+    assert.equal(state.isAttendanceFinal({}), false);
+    assert.equal(state.isAttendanceFinal(null), false);
+    assert.equal(state.isAttendanceFinal(undefined), false);
+});
+
+test('a new lobby has no stillIn stage and starts with an empty prompt list', () => {
+    const created = state.createLobby('test-guild', {
+        hostId: 'h', gameKey: 'g', gameLabel: 'G', seats: 4,
+        startsAt: Date.now() + 3600000, endsAt: Date.now() + 7200000
+    });
+
+    assert.deepEqual(Object.keys(created.stages).sort(), ['ended', 'reminded', 'started']);
+    assert.equal(created.stages.stillIn, undefined, 'the still-in stage is gone');
+    assert.deepEqual(created.promptMessageIds, []);
+});
