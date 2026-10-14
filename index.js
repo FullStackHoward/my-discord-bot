@@ -140,6 +140,11 @@ client.on('guildMemberRemove', radar.handleGuildMemberRemove);
 // Activity tracking listeners. messageCreate is a second, separate listener rather than
 // a branch inside the prefix-command one, so neither feature can break the other.
 client.on('messageCreate', activity.handleMessageCreate);
+
+// A third messageCreate listener: keeps the LFG channel to slash commands and lobby
+// cards only, deleting anything else and DMing the poster what to use instead. Inert
+// unless LOBBY_CHANNEL_GUARD_ENABLED is on.
+client.on('messageCreate', lobby.handleMessageCreate);
 client.on('voiceStateUpdate', activity.handleVoiceStateUpdate);
 client.on('guildMemberRemove', activity.handleGuildMemberRemove);
 

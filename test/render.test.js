@@ -34,6 +34,69 @@ test('an open card has both button rows, a closed card has none', () => {
     assert.equal(render.lobbyCardComponents(lobby({ status: 'cancelled' })).length, 0);
 });
 
+test('once attendance is final the rows stay but every button is greyed', () => {
+    const locked = lobby({ status: 'ended', attendance: { source: 'host', showed: ['host'], confirmedAt: Date.now() } });
+    const rows = render.lobbyCardComponents(locked);
+
+    assert.equal(rows.length, 2, 'the rows stay visible so the card reads as closed');
+
+    const buttons = rows.flatMap(r => r.toJSON().components);
+    assert.equal(buttons.length, 8);
+    assert.ok(buttons.every(b => b.disabled === true), 'every button disabled');
+});
+
+test('the voice and unconfirmed fallbacks lock the card too', () => {
+    for (const source of ['voice', 'unconfirmed']) {
+        const rows = render.lobbyCardComponents(lobby({ status: 'ended', attendance: { source, showed: [] } }));
+        assert.equal(rows.length, 2, `${source} should lock, not blank, the card`);
+        assert.ok(rows.flatMap(r => r.toJSON().components).every(b => b.disabled === true));
+    }
+});
+
+test('an ended lobby with attendance still pending keeps no buttons', () => {
+    const rows = render.lobbyCardComponents(lobby({ status: 'ended', attendance: { source: null, showed: [] } }));
+    assert.equal(rows.length, 0);
+});
+
+test('a lobby fixture with no attendance object does not throw', () => {
+    assert.equal(render.lobbyCardComponents(lobby()).length, 2);
+});
+
+test('disableComponents disables buttons and selects without mutating its input', () => {
+    const { ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, StringSelectMenuOptionBuilder } = require('discord.js');
+
+    const buttonRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('a').setLabel('A').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('b').setLabel('B').setStyle(ButtonStyle.Secondary)
+    );
+    const selectRow = new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder().setCustomId('s').addOptions(
+            new StringSelectMenuOptionBuilder().setLabel('one').setValue('1'))
+    );
+
+    const before = JSON.stringify([buttonRow.toJSON(), selectRow.toJSON()]);
+    const disabled = render.disableComponents([buttonRow, selectRow]);
+
+    assert.equal(JSON.stringify([buttonRow.toJSON(), selectRow.toJSON()]), before, 'input untouched');
+
+    const all = disabled.flatMap(r => r.toJSON().components);
+    assert.equal(all.length, 3);
+    assert.ok(all.every(c => c.disabled === true));
+});
+
+test('disableComponents accepts raw API rows as well as builders', () => {
+    const raw = [{ type: 1, components: [{ type: 2, custom_id: 'x', label: 'X', style: 1 }] }];
+    const disabled = render.disableComponents(raw);
+
+    assert.equal(disabled[0].toJSON().components[0].disabled, true);
+    assert.equal(raw[0].components[0].disabled, undefined, 'raw input untouched');
+});
+
+test('disableComponents handles an empty or missing list', () => {
+    assert.deepEqual(render.disableComponents([]), []);
+    assert.deepEqual(render.disableComponents(undefined), []);
+});
+
 test('no row exceeds five components and no message exceeds five rows', () => {
     const rows = render.lobbyCardComponents(lobby());
 

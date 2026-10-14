@@ -210,7 +210,12 @@ LOBBY_MAX_OPEN_PER_HOST=3
 LOBBY_MAX_OPEN_TOTAL=30
 LOBBY_MAX_DAYS_AHEAD=14
 LOBBY_MIN_LEAD_MINUTES=10
-LOBBY_REMINDER_MINUTES=30
+LOBBY_REMINDER_MINUTES=60
+
+# The LFG channel backstop. Must be exactly "true" to delete non-command posts there.
+# Discord permissions do the real enforcement; this catches what gets through.
+LOBBY_CHANNEL_GUARD_ENABLED=false
+LOBBY_CHANNEL_REMINDER_COOLDOWN_MINUTES=10
 LOBBY_NOW_EXPIRY_MINUTES=45
 LOBBY_SHOW_MIN_MINUTES=10
 LOBBY_RETENTION_DAYS=90
@@ -482,20 +487,39 @@ chatter go.
   the Show tags button. They never appear on the public card.
 
 **Reminders** go in the lobby thread, never as DMs: a thread mention cannot produce a
-closed-DM callout. A lobby booked well ahead gets a "still in?" check two hours out, then a
-reminder 30 minutes out, then a "starting now". If a lobby has a minimum player count and it
-is unmet at the reminder, the host gets Run anyway and Cancel buttons — nothing is ever
-cancelled automatically. DMs are used only for waitlist promotion, nudges and the newcomer
-prompt.
+closed-DM callout. There are two: one `LOBBY_REMINDER_MINUTES` before the start (an hour by
+default), then a "starting now" at the start. A lobby booked inside that window — including
+anything from `/lobby now` — skips the reminder and gets only the start post, since a
+reminder arriving moments after the card is just noise. If a lobby has a minimum player
+count and it is unmet at the reminder, the host gets Run anyway and Cancel buttons — nothing
+is ever cancelled automatically. DMs are used only for waitlist promotion, nudges and the
+newcomer prompt.
 
 **The board** is one message in the LFG channel showing what is on tonight and this week,
-plus a counts-only "Playing now" read from Vice Radar. It is edited in place as lobbies
-change and re-posted once a day at `LOBBY_BOARD_POST_HOUR` so it does not get buried, with
-the weekly digest folded into the Sunday re-post.
+plus a counts-only "Playing now" read from Vice Radar. It is **pinned**, edited in place as
+lobbies change, and re-posted once a day at `LOBBY_BOARD_POST_HOUR` so it does not get
+buried, with the weekly digest folded into the Sunday re-post. Each re-post is pinned and
+the previous board deleted, so exactly one board is ever pinned. Discord's "pinned a
+message" notice is cleaned up automatically.
+
+**The LFG channel is slash-commands only.** Conversation belongs in the per-lobby threads,
+which stay open to everyone. Enforcement is Discord permissions — deny Send Messages on
+`@everyone`, keep Use Application Commands and Send Messages in Threads allowed — and
+`LOBBY_CHANNEL_GUARD_ENABLED=true` turns on a code backstop that deletes anything which gets
+through anyway and DMs the poster what to use instead, at most once per person per
+`LOBBY_CHANNEL_REMINDER_COOLDOWN_MINUTES`. Bots, webhooks, system messages and `VICER_ADMIN`
+are exempt. A DM rather than an ephemeral reply, because Discord's ephemeral flag only
+exists on interaction responses and a deleted plain message has no interaction to answer.
 
 **Nudges** are off by default. With them on, a member gets one DM when a lobby is opened for
 a game on their profile at a time inside their availability — capped per day, held outside
 their local 08:00-22:00, and switched off automatically if their DMs are closed.
+
+**Once attendance is recorded** the lobby is closed: the card keeps its two button rows but
+every control is greyed out, and the tracked thread prompts are greyed too. Anything that
+cannot be greyed — an old nudge DM, a prompt posted before this behaviour existed — is still
+refused server-side with a message saying attendance has been recorded. Attendance counts as
+recorded whether the host confirmed it or the 24-hour voice fallback settled it.
 
 **After a lobby ends** the host is asked who showed up, pre-filled from who the bot saw in
 the voice channel. Anyone who was there can press Play again, and two or more presses create
@@ -510,10 +534,15 @@ and a title stays private to its submitter until a second member adds it or a lo
 Owner-only: `/lobby-stats [days]` for fill rate, show rate, repeat participation, nudge
 conversion and the best overlapping availability per game — counts only, no names.
 
-**This feature never moderates anyone.** It creates and edits messages and threads and keeps
-its own state file. It contains no kick, ban, timeout or role change, does not touch
-`lib/activity`, and adds no signal to Active/Inactive labelling — voice sessions already count
-there through the existing tracking.
+**This feature never moderates anyone.** It creates, edits and deletes messages and threads
+and keeps its own state file. With the channel guard on it deletes non-command posts in the
+LFG channel, which is message handling rather than action against the member. It contains no
+kick, ban, timeout or role change and does not touch `lib/activity`.
+
+One caveat worth knowing: a message deleted by the guard has already been counted by the
+activity tracker, which runs on every message. If that matters, add the LFG channel id to
+`ACTIVITY_IGNORED_CHANNELS` — that is a change to the activity and purge system, so it is a
+deliberate decision rather than something this feature does on its own.
 
 ### Staff Activity Log
 
@@ -571,7 +600,7 @@ When inviting the bot to a server, the following permissions are required:
 - Kick Members (required on the Application Server for the auto-kick, and on the main servers for `/purge`)
 - Attach Files (required in every log channel — long activity, purge and gamer ID lists are posted as `.txt` attachments)
 - Manage Messages in the gamer ID forum (to delete departed members' posts), plus Manage Threads if a thread has to be unarchived to delete in it
-- In the LFG channel: Send Messages, Embed Links, Create Public Threads, Send Messages in Threads, Manage Messages (to edit and tidy the board and finished cards), and Read Message History
+- In the LFG channel: Send Messages, Embed Links, Create Public Threads, Send Messages in Threads, Read Message History, and Manage Messages — which covers editing the board, deleting finished cards, pinning the board, and removing stray posts when the channel guard is on (plus Pin Messages, if Discord lists it as a separate permission)
 - Connect / View Channels on voice and stage channels (so voice sessions are visible to activity tracking)
 
 The bot currently has Administrator on the servers, which covers all of the above.
@@ -642,6 +671,8 @@ vice-community-bot/
 │       ├── render.js               # Cards, board, panels, DMs (pure builders)
 │       ├── components.js           # Buttons, selects, modals
 │       ├── commands.js             # Command definitions, handlers, autocomplete
+│       ├── stages.js               # Pure reminder-timing decisions
+│       ├── channel-guard.js        # Keeps the LFG channel to slash commands only
 │       ├── sweep.js                # Minute sweep: stages, nudges, series, pruning
 │       ├── board.js                # Board upsert and the daily re-post
 │       ├── crews.js                # Play-again crew formation
