@@ -198,6 +198,8 @@ VG_GAMER_ID_FORUM=
 # LFG lobbies. A server runs them only when its LFG channel is set; with it blank the
 # whole feature is dormant and registers no commands.
 VG_LFG_CHANNEL=
+# Listed first in the "where are you playing" picker. No longer a silent fallback: the
+# host always chooses, and In-game is always an option.
 VG_LFG_DEFAULT_VOICE=
 VC_LFG_CHANNEL=
 VC_LFG_DEFAULT_VOICE=
@@ -472,7 +474,10 @@ in the feature is stored as an instant and rendered in each viewer's own local c
 without a zone the bot cannot offer sensible start times.
 
 **`/lobby create`** opens a seat-limited lobby for a time you pick from a list, and
-`/lobby now` opens one starting immediately. Each lobby gets a card in the LFG channel with
+`/lobby now` opens one starting immediately. Both **require** you to say where you are
+playing: either **In-game** (meet up in the game itself) or one of the server's voice
+channels, picked from a list. There is no silent default, so a card never claims a voice
+channel the host did not choose. Each lobby gets a card in the LFG channel with
 Join, Maybe, Leave and Show tags, plus host controls for seats, note, crossplay, saving a
 template and cancelling. Every card gets its own thread, which is where reminders and
 chatter go.
@@ -522,7 +527,9 @@ refused server-side with a message saying attendance has been recorded. Attendan
 recorded whether the host confirmed it or the 24-hour voice fallback settled it.
 
 **After a lobby ends** the host is asked who showed up, pre-filled from who the bot saw in
-the voice channel. Anyone who was there can press Play again, and two or more presses create
+the voice channel. An **in-game** lobby has no voice channel to watch, so there is nothing
+to pre-fill and attendance rests on the host confirming it (or the 24-hour fallback
+recording it as unconfirmed). Anyone who was there can press Play again, and two or more presses create
 a crew — a small named group you can invite in one go next time with `/lobby create crew:`.
 
 **Games come only from what members submit.** There is no curated list and nothing to
