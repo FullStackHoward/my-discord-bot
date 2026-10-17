@@ -490,11 +490,15 @@ chatter go.
 - **Maybe** holds no seat and can be upgraded to Join later.
 - **If a lobby is cancelled**, everyone who had signed up — confirmed players, maybes and
   the waitlist — gets a thread mention and a DM saying which lobby, when it was due and
-  why. The host is not notified about their own cancellation. This covers all three ways a
-  lobby can end up cancelled: the host or staff pressing Cancel, the host leaving the server, or
-  the card being deleted. A cancelled or expired card is removed after
-  `LOBBY_DEAD_CARD_CLEANUP_MINUTES` rather than the full day a completed lobby gets,
-  since it is only clutter.
+  why. This covers all three ways a lobby can end up cancelled: the host or staff pressing
+  Cancel, the host leaving the server, or the card being deleted. A cancelled or expired
+  card is removed after `LOBBY_DEAD_CARD_CLEANUP_MINUTES` rather than the full day a
+  completed lobby gets, since it is only clutter.
+- **The host is told when somebody else ended their lobby** — staff pressing Cancel, or the
+  card being deleted — in a DM of its own, naming the real cause rather than the "host or
+  staff" wording members see. A host who presses Cancel themselves gets nothing, and
+  neither does a host whose lobby ended because they left the server. The staff member's
+  confirmation says how many people were told, and that the host was among them.
 - **Crossplay off** means a lobby only accepts members whose profile lists its platform.
   Turning it off later applies to new joins only; anyone already seated keeps their seat.
 - **Gamertags** are opt-in and are shown only to people confirmed in the same lobby, through
