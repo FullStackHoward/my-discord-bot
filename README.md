@@ -469,9 +469,9 @@ Helps members with awkward schedules line up games together. Everything is bot-s
 feature stores its own state in `lobby-state.json` and makes no calls to the Vicers API or
 anything else outside Discord.
 
-**`/availability`** is each member's profile — weekday and weekend time blocks, platforms,
+**`/lfg-profile`** is each member's profile — weekday and weekend time blocks, platforms,
 games, gamertags, and whether they want nudges. The panel saves as you pick, so there is no
-Save button. `/availability timezone` is the one thing that has to be set first: every time
+Save button. `/lfg-profile timezone` is the one thing that has to be set first: every time
 in the feature is stored as an instant and rendered in each viewer's own local clock, and
 without a zone the bot cannot offer sensible start times.
 
@@ -491,7 +491,7 @@ chatter go.
 - **If a lobby is cancelled**, everyone who had signed up — confirmed players, maybes and
   the waitlist — gets a thread mention and a DM saying which lobby, when it was due and
   why. The host is not notified about their own cancellation. This covers all three ways a
-  lobby can end up cancelled: the host pressing Cancel, the host leaving the server, or
+  lobby can end up cancelled: the host or staff pressing Cancel, the host leaving the server, or
   the card being deleted. A cancelled or expired card is removed after
   `LOBBY_DEAD_CARD_CLEANUP_MINUTES` rather than the full day a completed lobby gets,
   since it is only clutter.
