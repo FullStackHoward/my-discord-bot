@@ -267,3 +267,55 @@ test('the reminder adds host-only buttons when the minimum is unmet', () => {
     assert.equal(render.reminderPrompt(l, { minPlayersUnmet: false }).components.length, 1);
     assert.equal(render.reminderPrompt(l, { minPlayersUnmet: true }).components.length, 2);
 });
+
+// ---------------------------------------------------------------------------
+// The board carries live lobbies, which are joinable until they end.
+// ---------------------------------------------------------------------------
+
+function board(overrides = {}) {
+    return render.boardEmbed({
+        live: [], tonight: [], thisWeek: [], playingNow: [],
+        channelId: 'c', guildId: 'g',
+        ...overrides
+    }).toJSON();
+}
+
+test('a live lobby gets its own board section, ahead of what is coming up', () => {
+    const json = board({
+        live: [lobby({ number: 3, status: 'live', isNow: true })],
+        tonight: [lobby({ number: 9 })]
+    });
+
+    const names = json.fields.map(f => f.name);
+    assert.ok(names.includes('Live now \u00b7 join in'), `expected a live section in ${names.join(', ')}`);
+    assert.ok(names.indexOf('Live now \u00b7 join in') < names.indexOf('Tonight'), 'live comes first');
+    assert.match(json.fields[0].value, /Helldivers 2/);
+});
+
+test('a board holding only live lobbies does not claim there is nothing on', () => {
+    const json = board({ live: [lobby({ status: 'live' })] });
+
+    assert.ok(!/No open lobbies right now/.test(json.description || ''),
+        'a live lobby is something somebody can join');
+});
+
+test('a board with lobbies on it carries no empty-board line at all', () => {
+    // This used to be unconditional: the description fell through to boardEmpty whenever
+    // it was built, so every board said "No open lobbies right now" above its own list.
+    const json = board({ tonight: [lobby()] });
+
+    assert.ok(!json.description, `expected no description, got ${JSON.stringify(json.description)}`);
+    assert.equal(json.fields.length, 1);
+});
+
+test('an empty board still reads as empty', () => {
+    assert.match(board().description, /No open lobbies right now/);
+});
+
+test('boardEmbed tolerates callers that pass no live list', () => {
+    const json = render.boardEmbed({
+        tonight: [lobby()], thisWeek: [], playingNow: [], channelId: 'c', guildId: 'g'
+    }).toJSON();
+
+    assert.equal(json.fields.length, 1);
+});
