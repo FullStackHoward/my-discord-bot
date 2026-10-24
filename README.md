@@ -152,12 +152,26 @@ VC_LOG_CHANNEL=
 APP_LOG_CHANNEL=
 
 # Vice Radar (squad matching)
-# A server only runs Vice Radar if BOTH of its entries are filled in.
-# Leave a pair blank to keep Radar off in that server.
+# A server only runs Vice Radar if BOTH of its first two entries are filled in.
+# Leave that pair blank to keep Radar off in that server.
 VG_RADAR_ROLE=
 VG_RADAR_CHANNEL=
 VC_RADAR_ROLE=
 VC_RADAR_CHANNEL=
+# Optional. Named in the DM somebody gets when nobody else on Radar is playing
+# their game, so they know where to go and round up players. Without an ID the
+# channel is still named, as plain text instead of a link. Radar is never
+# disabled over a missing one.
+VG_GAME_FORUMS_CHANNEL=
+VG_GAME_CHAT_CHANNEL=
+VC_GAME_FORUMS_CHANNEL=
+VC_GAME_CHAT_CHANNEL=
+# Games that never earn a Radar DM, comma separated, matched case-insensitively.
+# Defaults to Wordle. Discord Activities are played inside Discord with whoever
+# is already there, so a DM saying to go and find a squad for one is noise.
+# Public callouts and the board headcount still count them. Set it to empty to
+# exclude nothing.
+RADAR_DM_IGNORED_GAMES=Wordle
 
 # Activity roles (Active / Inactive labeling and /purge)
 # A server only labels activity if BOTH of its entries are filled in.
@@ -309,13 +323,31 @@ Bots, staff, and server owners are skipped. Every correction posts to the server
 
 Opt-in presence matching, so squads form without anyone having to ask "who's on?".
 
-- Members opt in with `/vice-radar join`, or by reacting 🔔 to any Vice Radar post. `/vice-radar leave` opts back out.
-- When **two or more** opted-in members are playing the same game at the same time, the bot DMs each of them once and posts a public embed to the radar channel.
+- Members opt in with `/vice-radar join`. `/vice-radar leave` opts back out.
+- **Everyone with a visible activity status is counted**, opted in or not. The role decides only whether that person is DM'd about a match, never whether they are counted toward one. The headcount in a DM or a public post is the real number of people playing.
+- When **two or more** people are playing the same game at the same time, every opted-in member among them gets one DM. At **three or more**, a public embed also posts to the radar channel. The two thresholds are deliberately different: a pair overlapping is worth a private nudge to the two people it concerns, not a post everyone sees.
 - Only activities Discord reports as *Playing* count. Streaming, Listening (Spotify), Watching, and custom statuses are ignored. Games are matched on their exact activity name.
-- While a squad stays together, the post repeats only when the headcount reaches a **new high**, and the DMs never repeat. Once the count falls below two, the streak resets — the next time it reaches two, it's treated as brand new.
+- While a squad stays together, the public post repeats only when the headcount reaches a **new high**. Once the count falls below two, the streak resets — the next time it reaches two, it's treated as brand new.
+
+**The DM.** One per opted-in member per streak, and only ever one: when somebody else starts the same game, the DM they already have is **edited** rather than a second one sent. Late joiners get their own DM immediately — nobody waits for a gathering window.
+
+- When at least one other person in the match is on Radar, the DM lists them by name, with a **Message** button for each (ten at most; anyone past that is still named) and a highlighted **Start a group chat** button. Anyone in the match who isn't on Radar is counted in a closing line rather than named.
+- When the recipient is the only person in the match on Radar, there is nobody to introduce, so the DM instead says how many others are playing and points at three ways to round up a squad: a lobby in the LFG channel, the game's forum post, or game chat. Each configured channel gets a jump-link button, because a `<#id>` mention is not reliable inside a DM.
+- Edits are gathered onto a three-second timer, so five people starting at once costs one round of edits rather than five. Nothing delays a first DM.
+- Opting in **while already playing** gets you the DM for the match you are in straight away, rather than waiting for your next presence event. Opting out mid-match drops you from everyone else's next round of edits, but leaves you counted in the headcount — tracking has never been tied to the role.
+- A DM that can't be delivered or edited (closed DMs, bot blocked, message deleted) is logged once and left alone. It is never retried, because the retry would arrive as the duplicate this design exists to avoid.
+- **Discord Activities get no DM.** Wordle and the rest are played inside Discord with whoever is already in the call, so a DM telling you to go and find players is noise. Controlled by `RADAR_DM_IGNORED_GAMES`, DMs only — the public callout and the board count are unaffected.
+
+**The group chat button** creates a **private thread** in the radar channel and adds everyone in the match who is on Radar. A bot cannot open a real group DM: that endpoint belongs to Discord's retired GameBridge SDK and needs an OAuth2 token from every person who would be in it, so a thread is the closest thing on offer. Pressing it again points at the same thread rather than making a second one, and somebody who starts the game later is added to it on the next round of edits. A button from a match that has since ended answers that it has ended. Being counted in a match is not consent to being put in a chat about it, so only opted-in members are added.
+
+> Because the thread is private, staff cannot see it unless they hold Manage Threads. If that matters more than the privacy, change `ChannelType.PrivateThread` in `lib/radar/index.js` to `PublicThread` and drop `invitable`.
 - Runs per server: Vice Gamers, Vice Creators, or both, depending on which `*_RADAR_ROLE` / `*_RADAR_CHANNEL` pairs are set. `/vice-radar` is only registered in servers where Radar is configured.
 
-State is held in memory only and rebuilds itself within seconds of a restart as presence events arrive, so nothing is persisted to disk.
+**The icon** is looked up by name (`:viceradar:`), never by ID, and resolves to a plain CDN image URL — so it can live in any server the bot shares, or be uploaded in the Developer Portal as an application emoji, which belongs to the bot rather than to any server. Server emojis are checked first, application emojis second. If neither has it, the embeds fall back to a `Vice Radar 🌴` author line with no thumbnail and the log says so once.
+
+State is held in memory only and rebuilds itself within seconds of a restart as presence events arrive, so nothing is persisted to disk. That includes the DMs sent for a match: after a restart, a group-chat button from before it answers that the match has ended.
+
+`RADAR_PRESENCE_DEBUG=true` logs every activity on each presence event (name, type, application ID and flags) for one purpose: finding out how Discord Activities actually arrive, since the exclusion above matches on the name and would be better keyed on the Embedded activity flag if that flag proves reliable. It logs member IDs, never anything anybody has said. Off by default and not meant to stay on.
 
 **Two things gate this feature outside the code:**
 
@@ -513,8 +545,10 @@ count and it is unmet at the reminder, the host gets Run anyway and Cancel butto
 is ever cancelled automatically. DMs are used only for waitlist promotion, nudges and the
 newcomer prompt.
 
-**The board** is one message in the LFG channel showing what is on tonight and this week,
-plus a counts-only "Playing now" read from Vice Radar. It is **pinned**, edited in place as
+**The board** is one message in the LFG channel showing what is live right now, what is on
+tonight and what is on this week, plus a counts-only "Playing now" read from Vice Radar.
+Live lobbies are listed first, and separately from the rest, because they are the only ones
+somebody can act on immediately — and they are joinable until they end. It is **pinned**, edited in place as
 lobbies change, and re-posted once a day at `LOBBY_BOARD_POST_HOUR` so it does not get
 buried, with the weekly digest folded into the Sunday re-post. Each re-post is pinned and
 the previous board deleted, so exactly one board is ever pinned. Discord's "pinned a
@@ -621,6 +655,7 @@ When inviting the bot to a server, the following permissions are required:
 - Attach Files (required in every log channel — long activity, purge and gamer ID lists are posted as `.txt` attachments)
 - Manage Messages in the gamer ID forum (to delete departed members' posts), plus Manage Threads if a thread has to be unarchived to delete in it
 - In the LFG channel: Send Messages, Embed Links, Create Public Threads, Send Messages in Threads, Read Message History, and Manage Messages — which covers editing the board, deleting finished cards, pinning the board, and removing stray posts when the channel guard is on (plus Pin Messages, if Discord lists it as a separate permission)
+- In the Vice Radar channel: Create Private Threads and Send Messages in Threads (for the group chat the Radar DM offers)
 - Connect / View Channels on voice and stage channels (so voice sessions are visible to activity tracking)
 
 The bot currently has Administrator on the servers, which covers all of the above.
@@ -671,6 +706,7 @@ vice-community-bot/
 │   ├── prefix-commands.js          # !verify / !announce routing
 │   ├── radar/
 │   │   ├── index.js                # Vice Radar (Feature E)
+│   │   ├── dm-plan.js              # Who gets a DM, and the DM payloads (pure)
 │   │   └── phrase-bank.js          # Loads data/radar-phrases.json on every pick
 │   ├── activity/
 │   │   ├── index.js                # State, signal capture, classification, role swaps
