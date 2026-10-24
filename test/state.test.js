@@ -76,6 +76,35 @@ test('join refuses a closed lobby and a platform mismatch', () => {
     assert.equal(state.joinLobby(lobby({ seats: 4 }), 'a', { platformOk: false }).result, 'platform');
 });
 
+// A lobby goes live the moment its start time passes, which for /lobby now is the first
+// sweep after it was created. While joining was open-only, every press from then on was
+// told the lobby no longer existed.
+test('join works on a live lobby, including a /lobby now one', () => {
+    const r = state.joinLobby(lobby({ seats: 4, status: 'live', isNow: true }), 'a');
+
+    assert.equal(r.ok, true);
+    assert.equal(r.result, 'joined');
+});
+
+test('maybe works on a live lobby too', () => {
+    assert.equal(state.maybeLobby(lobby({ status: 'live' }), 'a').result, 'maybe');
+});
+
+test('join and maybe still refuse a lobby that has actually finished', () => {
+    for (const status of ['ended', 'cancelled', 'expired']) {
+        assert.equal(state.joinLobby(lobby({ seats: 4, status }), 'a').result, 'closed', status);
+        assert.equal(state.maybeLobby(lobby({ status }), 'a').result, 'closed', status);
+    }
+});
+
+test('a full live lobby waitlists a joiner rather than refusing them', () => {
+    const l = lobby({ seats: 1, status: 'live' });
+    const r = state.joinLobby(l, 'a');
+
+    assert.equal(r.result, 'waitlisted');
+    assert.deepEqual(l.waitlist, ['a']);
+});
+
 test('join upgrades a maybe and clears them from the maybe list', () => {
     const l = lobby({ seats: 4 });
     state.maybeLobby(l, 'a');
@@ -125,7 +154,18 @@ test('leaving when not in the lobby is a no-op', () => {
     assert.equal(r.result, 'notIn');
 });
 
-test('a closed lobby does not promote on leave', () => {
+test('a finished lobby does not promote on leave', () => {
+    const l = lobby({ seats: 2, status: 'ended' });
+    l.players.push('a');
+    l.waitlist.push('b');
+
+    assert.equal(state.leaveLobby(l, 'a').promoted, null);
+});
+
+// KNOWN LIMIT, deliberately left as it was: live lobbies became joinable, but a seat
+// freed up by a leaver in a live lobby is still not handed to the waitlist. Somebody
+// pressing Join would take it. Changing this was not part of the request.
+test('a live lobby does not promote on leave', () => {
     const l = lobby({ seats: 2, status: 'live' });
     state.joinLobby(l, 'a');
     l.waitlist.push('b');

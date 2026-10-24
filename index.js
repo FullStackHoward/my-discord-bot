@@ -161,6 +161,10 @@ client.on('guildMemberRemove', lobby.handleGuildMemberRemove);
 // stay independent. Only schedules the newcomer LFG prompt.
 client.on('guildMemberUpdate', lobby.handleGuildMemberUpdate);
 
+// A third, for Vice Radar: somebody who opts in while already playing is told about the
+// match they are in rather than waiting for their next presence event.
+client.on('guildMemberUpdate', radar.handleGuildMemberUpdate);
+
 // Error handling
 client.on('error', error => {
     console.error('Client error:', error);
