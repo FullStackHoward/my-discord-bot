@@ -158,6 +158,13 @@ VG_RADAR_ROLE=
 VG_RADAR_CHANNEL=
 VC_RADAR_ROLE=
 VC_RADAR_CHANNEL=
+# Optional. Where the public callout and the weekly digest are posted. The radar
+# channel also carries the group-chat threads a Radar DM can open and the
+# closed-DM notice for event RSVPs, so pointing the loud post at a busy channel
+# like #chat is a separate setting rather than a repoint of the one above. Leave
+# blank and everything stays in the radar channel, as before.
+VG_RADAR_CALLOUT_CHANNEL=
+VC_RADAR_CALLOUT_CHANNEL=
 # Optional. Named in the DM somebody gets when nobody else on Radar is playing
 # their game, so they know where to go and round up players. Without an ID the
 # channel is still named, as plain text instead of a link. Radar is never
@@ -172,6 +179,11 @@ VC_GAME_CHAT_CHANNEL=
 # Public callouts and the board headcount still count them. Set it to empty to
 # exclude nothing.
 RADAR_DM_IGNORED_GAMES=Wordle
+# Weekly top 5 games digest. Off until the api.vicers.net endpoint exists: results
+# still queue locally either way, so turning it on later loses nothing and leaving
+# it off avoids retrying against a 404. Everything else about the digest needs no
+# configuration.
+RADAR_DIGEST_API_ENABLED=false
 
 # Activity roles (Active / Inactive labeling and /purge)
 # A server only labels activity if BOTH of its entries are filled in.
@@ -343,6 +355,17 @@ Opt-in presence matching, so squads form without anyone having to ask "who's on?
 > Because the thread is private, staff cannot see it unless they hold Manage Threads. If that matters more than the privacy, change `ChannelType.PrivateThread` in `lib/radar/index.js` to `PublicThread` and drop `invitable`.
 - Runs per server: Vice Gamers, Vice Creators, or both, depending on which `*_RADAR_ROLE` / `*_RADAR_CHANNEL` pairs are set. `/vice-radar` is only registered in servers where Radar is configured.
 
+**Where the public callout goes** is `*_RADAR_CALLOUT_CHANNEL` when set, and the radar
+channel otherwise. They are separate settings because `VG_RADAR_CHANNEL` feeds three
+different things: the callout, the private group-chat threads a Radar DM can open, and the
+"your DMs are closed" notice for event RSVPs. Moving the loud one into a busy channel
+should not drag the other two along with it.
+
+**No Radar post can mass-mention.** Mentions inside an embed never notify anybody, which
+is what the callout and the digest both are, and both set `allowedMentions: { parse: [] }`
+on top of that. The one deliberate ping in the radar channel is the closed-DM notice,
+which now names the one user explicitly so an event title cannot smuggle in anything else.
+
 **The icon** is looked up by name (`:viceradar:`), never by ID, and resolves to a plain CDN image URL — so it can live in any server the bot shares, or be uploaded in the Developer Portal as an application emoji, which belongs to the bot rather than to any server. Server emojis are checked first, application emojis second. If neither has it, the embeds fall back to a `Vice Radar 🌴` author line with no thumbnail and the log says so once.
 
 State is held in memory only and rebuilds itself within seconds of a restart as presence events arrive, so nothing is persisted to disk. That includes the DMs sent for a match: after a restart, a group-chat button from before it answers that the match has ended.
@@ -353,6 +376,65 @@ State is held in memory only and rebuilds itself within seconds of a restart as 
 
 1. The **Presence Intent** must be enabled on the Bot page of the Discord Developer Portal. Without it presence events never fire — silently, with no error.
 2. Each member must have **Settings → Activity Privacy → "Display current activity as a status message"** turned on. With it off, Discord shows nobody what they're playing, the bot included. There is no way to detect or work around this from the bot side.
+
+### Weekly Top 5 Games (Vice Gamers only)
+
+A Sunday 5:00 PM Eastern post in the callout channel: **"What the Lounge played this
+week"**, the five games the most people actually played.
+
+- **Who is counted:** every non-bot member whose Discord activity is visible. The Radar
+  opt-in role has never decided who is *counted* - only who gets DM'd - and counting
+  everyone is what makes the title of the post true. The member-facing way out is the one
+  the footer names: **Settings → Activity Privacy → "Display current activity as a status
+  message"**. Turn it off and nothing about you is read, by this or by Radar.
+- **Sampling:** every five minutes, aligned to wall-clock slots, each sample credits five
+  minutes to every (member, game) pair it can see. A slot already sampled is skipped, so a
+  restart inside five minutes cannot double count. Missed slots are not backfilled - the
+  bot was not watching, so it does not know what was on.
+- **Eligibility:** 15 minutes on a game inside the window (three samples) before a member
+  counts toward it. A game fewer than **2** people played is left out entirely, which also
+  means the post can never single one person out.
+- **Ranking:** unique players first, total hours as the tiebreak. Up to five lines, fewer
+  if fewer qualify. From week two each line carries `up N`, `down N` or `new`.
+- **The window** is the seven calendar days ending at post time, in `America/New_York`.
+  Across the November clock change that is 169 hours, not 168, and the first post of
+  Nov 1 2026 fires at 22:00 UTC rather than 21:00. Nothing here caches a UTC offset:
+  it reuses `lib/lobby/time.js`, which scans forward in UTC and asks `Intl` what the local
+  clock says. There are tests pinning both instants.
+- **Idempotent:** the Eastern date of the last handled Sunday is on disk, so neither a
+  second pass nor a restart can post twice. A post missed at 5 PM still goes out later the
+  same Eastern day; after midnight the week is skipped and staff are told rather than a
+  day-late post appearing.
+- **Privacy of what is stored:** the post names nobody and cannot mention anybody. The
+  per-member minute counts it is computed from are deleted as soon as the digest that
+  consumed them has posted, and a member who leaves the server is forgotten immediately.
+  What survives the week is the ranking: game names and counts, no member IDs.
+
+**Curating the game list.** Discord reports the same game under different names, and some
+things that are not games report as *Playing* at all. Two owner-only commands handle it
+without a deploy, reading `data/radar-games.json` fresh on every pass:
+
+| Command | What it does |
+|---|---|
+| `/radar-digest-preview` | Renders the last seven days privately, posting nothing and recording no week. Also lists how many games the 2-player rule held back and which titles are not yet grouped, which is how the lists get curated. |
+| `/radar-games alias add\|remove\|list` | Merges reported names into one entry with one display name, for example every GTA variant into **Grand Theft Auto** and every emulator into **Retro / Emulation**. |
+| `/radar-games exclude add\|remove\|list` | Ignores an app that reports as Playing but is not a game: code editors and launchers. |
+
+A game is keyed by its rich-presence application ID when it has one and by its normalized
+name otherwise, so the same title can arrive under two keys when only some members have
+rich presence for it. That is exactly what the alias list is for: list both and they merge.
+
+> The seeded alias and exclude lists are **guesses at the strings Discord reports, not
+> observed ones**. Run with `RADAR_PRESENCE_DEBUG=true` for ten minutes, look at what comes
+> back, then fix them with `/radar-games`. Registering the two new commands needs one PM2
+> restart; after that, curating never does.
+
+**History.** Each week's result is queued for `api.vicers.net` so the site can use it
+later, as aggregates only. The write never blocks the post and retries on the next pass.
+It is gated behind `RADAR_DIGEST_API_ENABLED` because the endpoint does not exist yet; the
+contract is one POST per week to `/api/gaming/weekly-game-stats/` with the `X-Bot-Secret`
+header, a `games` array of `{ game_key, display_name, unique_players, total_hours, rank }`,
+upserting on `(community, week_start, game_key)`.
 
 ### Activity Roles (Active / Inactive)
 
@@ -656,6 +738,7 @@ When inviting the bot to a server, the following permissions are required:
 - Manage Messages in the gamer ID forum (to delete departed members' posts), plus Manage Threads if a thread has to be unarchived to delete in it
 - In the LFG channel: Send Messages, Embed Links, Create Public Threads, Send Messages in Threads, Read Message History, and Manage Messages — which covers editing the board, deleting finished cards, pinning the board, and removing stray posts when the channel guard is on (plus Pin Messages, if Discord lists it as a separate permission)
 - In the Vice Radar channel: Create Private Threads and Send Messages in Threads (for the group chat the Radar DM offers)
+- In the Vice Radar **callout** channel, when it is a different one: Send Messages and Embed Links (the public callout and the weekly top 5 digest)
 - Connect / View Channels on voice and stage channels (so voice sessions are visible to activity tracking)
 
 The bot currently has Administrator on the servers, which covers all of the above.
@@ -669,7 +752,7 @@ Enabled on the Bot page of the Discord Developer Portal:
 
 - **Server Members Intent** — member joins, role syncing, reconciliation, activity sweeps, LFG cleanup
 - **Message Content Intent** — prefix commands and activity message tracking
-- **Presence Intent** — Vice Radar only; leave it off and the rest of the bot is unaffected
+- **Presence Intent** — Vice Radar and the weekly top 5 games digest; leave it off and both stop seeing anything, while the rest of the bot is unaffected
 
 `GuildVoiceStates` (activity voice tracking) and `GuildScheduledEvents` are **not**
 privileged and need no Developer Portal toggle — the code requesting them is enough.
@@ -707,7 +790,14 @@ vice-community-bot/
 │   ├── radar/
 │   │   ├── index.js                # Vice Radar (Feature E)
 │   │   ├── dm-plan.js              # Who gets a DM, and the DM payloads (pure)
-│   │   └── phrase-bank.js          # Loads data/radar-phrases.json on every pick
+│   │   ├── phrase-bank.js          # Loads data/radar-phrases.json on every pick
+│   │   └── game-digest/
+│   │       ├── index.js            # Sampler, Sunday scheduler, the post, history queue
+│   │       ├── digest.js           # Window maths, ranking, the embed (pure)
+│   │       ├── identity.js         # Activity to one game key (pure)
+│   │       ├── store.js            # Hourly buckets, week records, retention
+│   │       ├── games-config.js     # Alias and exclude lists, with seeds
+│   │       └── commands.js         # /radar-digest-preview and /radar-games
 │   ├── activity/
 │   │   ├── index.js                # State, signal capture, classification, role swaps
 │   │   ├── seeding.js              # One-time message-history backfill (resumable)
@@ -744,7 +834,8 @@ vice-community-bot/
 ├── gamer-id-log.jsonl              # Permanent per-message deletion record (never committed)
 ├── gamer-id-state.json             # Gamer ID cleanup on/off setting (never committed)
 ├── lobby-state.json                # LFG profiles, lobbies, crews, series (never committed)
-├── test/                           # node:test unit tests for the pure LFG modules
+├── radar-digest-state.json         # Game minutes, week records, history queue (never committed)
+├── test/                           # node:test unit tests for the pure LFG and Radar modules
 ├── .gitignore
 ├── package.json
 └── README.md

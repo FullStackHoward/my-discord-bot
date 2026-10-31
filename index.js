@@ -28,6 +28,7 @@ const events = require('./lib/events');
 const slashCommands = require('./lib/slash-commands');
 const prefixCommands = require('./lib/prefix-commands');
 const radar = require('./lib/radar');
+const gameDigest = require('./lib/radar/game-digest');
 const activity = require('./lib/activity');
 const activitySeeding = require('./lib/activity/seeding');
 const activityRoleSweep = require('./lib/activity/role-sweep');
@@ -121,6 +122,18 @@ client.once('ready', () => {
             void lobby.runLobbySweep();
         }, LOBBY_SWEEP_INTERVAL_MS);
     }, LOBBY_SWEEP_START_DELAY_MS);
+
+    // Vice Radar weekly game digest. Ticks every minute; the five-minute sampling slot
+    // and the Sunday post are both decided inside the tick, so the interval can drift or
+    // restart without changing what gets credited or posting twice.
+    if (gameDigest.digestGuildIds().length > 0) {
+        gameDigest.startFlushing();
+
+        void gameDigest.runDigestTick();
+        setInterval(() => {
+            void gameDigest.runDigestTick();
+        }, 60 * 1000);
+    }
 });
 
 // ---------------------------------------------------------------------------
@@ -206,6 +219,12 @@ function shutdown(signal) {
         lobby.flushLobbyState(true);
     } catch (error) {
         console.error('Failed to flush lobby state on shutdown:', error);
+    }
+
+    try {
+        gameDigest.flush();
+    } catch (error) {
+        console.error('Failed to flush the Radar digest state on shutdown:', error);
     }
 
     process.exit(0);
