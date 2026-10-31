@@ -13,6 +13,9 @@ gamer-id-log.jsonl
 gamer-id-state.json
 lobby-state.json
 lobby-state.json.corrupt-*
+radar-digest-state.json
+radar-digest-state.json.corrupt-*
+data/radar-games.json
 
 # Optional local files
 .DS_Store
