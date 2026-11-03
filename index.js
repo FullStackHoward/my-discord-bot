@@ -34,7 +34,6 @@ const activitySeeding = require('./lib/activity/seeding');
 const activityRoleSweep = require('./lib/activity/role-sweep');
 const gamerId = require('./lib/gamer-id');
 const lobby = require('./lib/lobby');
-const arcade = require('./lib/arcade');
 
 // Bot ready event
 client.once('ready', () => {
@@ -135,15 +134,6 @@ client.once('ready', () => {
             void gameDigest.runDigestTick();
         }, 60 * 1000);
     }
-
-    // Vice Arcade. One call starts all three loops: the thirty-second event poll, the
-    // ten-minute role reconcile, and the departure sweep. Inert unless the arcade
-    // channel is configured, and Vice Gamers only.
-    //
-    // The poll is more than a notification drain: the API opens and closes rounds
-    // lazily, triggered by that call, so this loop is what makes rounds turn over at
-    // all.
-    arcade.start(client);
 });
 
 // ---------------------------------------------------------------------------
@@ -179,11 +169,6 @@ client.on('guildMemberRemove', gamerId.handleGuildMemberRemove);
 // A fourth listener on the same event: clears the leaver's LFG profile, frees their
 // seats and cancels lobbies they were hosting.
 client.on('guildMemberRemove', lobby.handleGuildMemberRemove);
-
-// A fifth listener on the same event: anyone who leaves Vice Gamers disappears from
-// every arcade leaderboard, so the API is told at once with no debounce. A report that
-// cannot be delivered is queued to disk and retried, because the event happens once.
-client.on('guildMemberRemove', arcade.handleGuildMemberRemove);
 
 // A second guildMemberUpdate listener, beside the tier sync one, so the two features
 // stay independent. Only schedules the newcomer LFG prompt.
@@ -240,12 +225,6 @@ function shutdown(signal) {
         gameDigest.flush();
     } catch (error) {
         console.error('Failed to flush the Radar digest state on shutdown:', error);
-    }
-
-    try {
-        arcade.stop();
-    } catch (error) {
-        console.error('Failed to stop the Vice Arcade loops on shutdown:', error);
     }
 
     process.exit(0);

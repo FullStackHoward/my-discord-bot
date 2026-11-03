@@ -4,17 +4,25 @@ The API owns the leaderboards, the rounds and who is on the podium. This module 
 everything that needs a Discord connection: the posts, the three roles, and telling the
 API when somebody leaves the server.
 
+It runs as the **Vice Arcade bot**: `arcade.js` at the repo root, a second PM2 process
+from this checkout, logged in as the Vice Arcade application rather than as Vice Verify
+Bot. That is the same application that owns the Activity and its `/arcade` Entry Point
+command, so the arcade's posts and roles come from the arcade. Vice Verify Bot does not
+load this module.
+
 Vice Gamers only. There is no Vice Creators arcade, deliberately, so there is no second
 set of boards or roles to drift out of step. Leaving Vice Creators or the Application
 Server has no effect on anybody's scores.
 
 ## Switching it on
 
-Set these in the server `.env` and restart with PM2. The feature is inert without the
-first one.
+Set these in the server `.env`. The deploy starts `vice-arcade-bot` once the token is
+there; after editing `.env` by hand, `pm2 restart vice-arcade-bot`. The bot logs in but
+does nothing without the arcade channel.
 
 | Variable | What it is |
 |---|---|
+| `VICE_ARCADE_BOT_TOKEN` | The Vice Arcade application's bot token. The same value the arcade API holds under the same name. |
 | `VG_ARCADE_CHANNEL_ID` | Where records and daily boards are posted, and the only channel play is allowed from. |
 | `VG_CHAT_CHANNEL_ID` | Where the end-of-round callout goes. |
 | `VG_ARCADE_ROLE_GOLD_ID` | Arcade Champion. |
@@ -25,9 +33,28 @@ first one.
 Both spellings are read, with and without the `_ID` suffix, so the names in the server
 `.env` do not have to be retyped to match the rest of `lib/config.js`.
 
-The bot needs **Manage Roles**, and its own highest role must sit **above** all three
-arcade roles. `canManageRole` fails closed: a role above the bot's is left alone and
-complained about once an hour rather than attempted every ten minutes.
+### The Vice Arcade application
+
+In the Developer Portal, on the Bot page: **Server Members Intent** on, Presence and
+Message Content off. The client asks for exactly Guilds and Server Members, and an intent
+the application has not been granted fails the login. Public Bot off.
+
+Invite it to Vice Gamers with the `bot` scope (which includes `applications.commands`,
+needed for `/arcade-review`) and these permissions:
+
+| Permission | Why |
+|---|---|
+| Manage Roles | The three podium roles |
+| View Channels | `#vice-arcade`, `#chat` and the Vice Gamers staff log |
+| Send Messages, Embed Links | Record and board posts, the round callout, staff log entries |
+| Read Message History | Fetching its own posted boards to edit or delete them after a departure |
+
+Not Administrator. The arcade API holds this same token to look up Activity instances,
+so whatever the bot is granted, that web server effectively holds too.
+
+Its own highest role must sit **above** all three arcade roles. `canManageRole` fails
+closed: a role above the bot's is left alone and complained about once an hour rather
+than attempted every ten minutes.
 
 A missing channel or role is skipped and logged, never substituted. A leaderboard in the
 wrong channel is worse than no leaderboard.
@@ -120,9 +147,10 @@ every board, and recomputes the result of a finished round if it was in one. Own
 checked in the handler rather than relying on the permission flag, since an Administrator
 can still see a command hidden that way.
 
-Named `arcade-review` rather than `arcade` because the Vice Arcade application owns
-`/arcade` as its Entry Point command, which Discord requires to be global and
-option-less.
+Named `arcade-review` rather than `arcade` because `/arcade` is this application's
+Entry Point command, which Discord requires to be global and option-less. For the same
+reason `/arcade-review` is registered to Vice Gamers only: a global registration would
+replace the global list and delete the Entry Point.
 
 ## Tests
 
@@ -133,6 +161,10 @@ npm test
 `test/arcade-posts.test.js` covers the embeds, which are pure builders. What it pins is
 not the wording but the two rules easiest to break unnoticed: a long board splits without
 repeating its reset note, and nothing except the three podium winners ever pings.
+
+`test/arcade-bot.test.js` covers `arcade.js`: the token it logs in with, that
+`/arcade-review` is registered to the guild and never globally, and that interactions and
+departures are routed. `test/client.test.js` pins the intents each process asks for.
 
 `test/arcade-wiring.test.js` covers the behaviour that only shows up under failure, with
 Discord and the API stubbed: a short member list abandoning the sweep, a timeout during
