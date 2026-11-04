@@ -93,7 +93,6 @@ stub('../lib/arcade/api', {
     finalizeSeason: apiStub('finalizeSeason', { announced: true }),
     dailyBoard: apiStub('dailyBoard', { entries: [] }),
     recordPostedMessages: apiStub('recordPostedMessages', null),
-    approveScore: apiStub('approveScore', { announced: true }),
     removeScore: apiStub('removeScore', null),
     reportDepartures: apiStub('reportDepartures', { processed: 0, scores_removed: 0, boards_changed: 0 }),
     activePlayers: apiStub('activePlayers', { discord_user_ids: [] })
