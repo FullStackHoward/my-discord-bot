@@ -13,39 +13,40 @@ const client = require('./lib/client');
 const { VICE_ARCADE_BOT_TOKEN, VG_GUILD_ID, LOG_COLORS } = require('./lib/config');
 const { sendStaffLog, errorField } = require('./lib/staff-log');
 const arcade = require('./lib/arcade');
-const { ARCADE_REVIEW_COMMAND, handleArcadeReviewCommand } = require('./lib/arcade/commands');
 
 if (!VICE_ARCADE_BOT_TOKEN) {
     console.error('VICE_ARCADE_BOT_TOKEN is not set, so the Vice Arcade bot cannot log in.');
     process.exit(1);
 }
 
-// Guild-scoped, always. The Vice Arcade application's one global command is /arcade, the
-// Entry Point command that launches the Activity, and a global set() here would replace
-// the whole global list and delete it. A guild set() only ever touches this guild.
-async function registerCommands() {
-    const commands = arcade.arcadeConfigFor(VG_GUILD_ID) ? [ARCADE_REVIEW_COMMAND] : [];
+// This bot registers no slash commands. Scores are no longer reviewed, so /arcade-review
+// is gone, and on login it is deleted from Vice Gamers if an earlier version registered
+// it. Deleted by name rather than with a set([]), so any other guild command the
+// Vice Arcade application has is left alone. Never global: the application's global
+// list holds /arcade, the Entry Point command.
+const RETIRED_COMMANDS = ['arcade-review'];
 
+async function removeRetiredCommands() {
     try {
-        await client.application.commands.set(commands, VG_GUILD_ID);
-        console.log(`Registered ${commands.length} Vice Arcade slash command(s) in Vice Gamers`);
-    } catch (error) {
-        console.error('Failed to register the Vice Arcade slash commands:', error);
+        const registered = await client.application.commands.fetch({ guildId: VG_GUILD_ID });
 
-        void sendStaffLog(VG_GUILD_ID, {
-            color: LOG_COLORS.error,
-            title: '⚠️ Vice Arcade Command Registration Failed',
-            description: '`/arcade-review` could not be registered, so pending records cannot be approved until it is.',
-            fields: [errorField(error)],
-            footer: 'Usually the Vice Arcade bot was invited without the applications.commands scope.'
-        });
+        for (const command of registered.values()) {
+            if (!RETIRED_COMMANDS.includes(command.name)) continue;
+
+            await client.application.commands.delete(command.id, VG_GUILD_ID);
+            console.log(`Removed the retired /${command.name} command from Vice Gamers`);
+        }
+    } catch (error) {
+        // Harmless if it fails: a leftover /arcade-review is only visible to staff and
+        // nothing answers it. Logged so it is not a mystery.
+        console.error('Could not remove the retired Vice Arcade slash commands:', error);
     }
 }
 
 client.once('ready', () => {
     console.log(`${client.user.tag} is now online and ready!`);
 
-    void registerCommands();
+    void removeRetiredCommands();
 
     // One call starts all three loops: the thirty-second event poll, the ten-minute role
     // reconcile, and the departure sweep. Inert unless the arcade channel is configured,
@@ -55,18 +56,6 @@ client.once('ready', () => {
     // lazily, triggered by that call, so this loop is what makes rounds turn over at
     // all.
     arcade.start(client);
-});
-
-client.on('interactionCreate', async interaction => {
-    if (!interaction.isChatInputCommand() || interaction.commandName !== 'arcade-review') return;
-
-    try {
-        await handleArcadeReviewCommand(interaction);
-    } catch (error) {
-        // Safety net for anything the handler doesn't catch itself, e.g. the interaction
-        // expiring before we could respond to it at all.
-        console.error('Error handling /arcade-review:', error);
-    }
 });
 
 // Anyone who leaves Vice Gamers disappears from every arcade leaderboard, so the API is

@@ -39,8 +39,7 @@ In the Developer Portal, on the Bot page: **Server Members Intent** on, Presence
 Message Content off. The client asks for exactly Guilds and Server Members, and an intent
 the application has not been granted fails the login. Public Bot off.
 
-Invite it to Vice Gamers with the `bot` scope (which includes `applications.commands`,
-needed for `/arcade-review`) and these permissions:
+Invite it to Vice Gamers with the `bot` scope and these permissions:
 
 | Permission | Why |
 |---|---|
@@ -82,8 +81,7 @@ against the real member list.
 
 | Type | What the bot does |
 |---|---|
-| `new_alltime_record` | Posts in the arcade channel. Written on approval, so nothing is announced unreviewed. |
-| `record_pending_review` | DMs the owner the run stats and the score id. Falls back to the staff log if DMs are closed. |
+| `new_alltime_record` | Posts in the arcade channel. Written the moment a run passes everybody else's best; there is no review step. |
 | `daily_board_closed` | Posts the finished day's board, then records the message ids so a departure can edit them. |
 | `daily_boards_changed` | Queues edits to those posted messages. |
 | `podium_changed` | Moves the roles. Posts nothing. |
@@ -140,17 +138,13 @@ edits run through a serial queue with a fixed gap: a `/purge` can touch many mes
 and a queue that cannot overtake itself cannot burst into a rate limit. A message that is
 no longer there is skipped, not recreated.
 
-## `/arcade-review`
+## Slash commands
 
-`approve` lets a pending record count and posts it publicly. `remove` takes a score off
-every board, and recomputes the result of a finished round if it was in one. Owner only,
-checked in the handler rather than relying on the permission flag, since an Administrator
-can still see a command hidden that way.
-
-Named `arcade-review` rather than `arcade` because `/arcade` is this application's
-Entry Point command, which Discord requires to be global and option-less. For the same
-reason `/arcade-review` is registered to Vice Gamers only: a global registration would
-replace the global list and delete the Entry Point.
+None. Scores are no longer reviewed, so `/arcade-review` is gone. On login `arcade.js`
+deletes it from Vice Gamers by name if an earlier version registered it, and touches no
+other command: the application's global list holds `/arcade`, the Entry Point command,
+and other guild commands may belong to the arcade API. Taking a score off the boards is
+done from the arcade API's Django admin.
 
 ## Tests
 
@@ -162,8 +156,8 @@ npm test
 not the wording but the two rules easiest to break unnoticed: a long board splits without
 repeating its reset note, and nothing except the three podium winners ever pings.
 
-`test/arcade-bot.test.js` covers `arcade.js`: the token it logs in with, that
-`/arcade-review` is registered to the guild and never globally, and that interactions and
+`test/arcade-bot.test.js` covers `arcade.js`: the token it logs in with, that the
+retired `/arcade-review` is deleted by name and nothing else is touched, and that
 departures are routed. `test/client.test.js` pins the intents each process asks for.
 
 `test/arcade-wiring.test.js` covers the behaviour that only shows up under failure, with
