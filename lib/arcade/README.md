@@ -106,7 +106,7 @@ confirms each winner is still in Vice Gamers before anything is written or calle
   calling out nobody for another thirty seconds.
 
 By the time the callout goes out, the boards have already reset and the roles have
-already come off. The wording says the round has ended for that reason: without it,
+already come off. The wording says the season has ended for that reason: without it,
 members who watched the roles vanish would read the post as a bug.
 
 ## Departures, and the one thing to be careful about

@@ -130,7 +130,7 @@ test('a record post names the displaced player without pinging them', () => {
     assert.deepEqual(message.allowedMentions, { parse: [] });
 });
 
-test('the round callout mentions exactly the three winners and nobody else', () => {
+test('the season callout mentions exactly the three winners and nobody else', () => {
     const message = posts.podiumMessage({
         winners: [
             { place: 1, discord_user_id: '1', display_name: 'A', average_placement: 1 },
@@ -145,14 +145,14 @@ test('the round callout mentions exactly the three winners and nobody else', () 
     assert.match(message.embeds[0].data.description, /<#555>/, 'and points at the arcade channel');
 });
 
-test('the callout says the round has ended, because the roles are already off by then', () => {
+test('the callout says the season has ended, because the roles are already off by then', () => {
     const message = posts.podiumMessage({
         winners: [{ place: 1, discord_user_id: '1', display_name: 'A', average_placement: 1 }],
         arcadeChannelId: '555'
     });
 
     assert.match(message.embeds[0].data.title, /ended/i);
-    assert.match(message.embeds[0].data.description, /new round has started/i);
+    assert.match(message.embeds[0].data.description, /new season has started/i);
 });
 
 test('fewer than three winners calls out only the places there are', () => {
@@ -164,7 +164,7 @@ test('fewer than three winners calls out only the places there are', () => {
     assert.doesNotMatch(message.embeds[0].data.description, /Silver|Bronze/);
 });
 
-test('a round nobody played produces no callout at all', () => {
+test('a season nobody played produces no callout at all', () => {
     assert.equal(posts.podiumMessage({ winners: [] }), null);
     assert.equal(posts.correctionMessage({ winners: [] }), null);
 });
