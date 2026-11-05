@@ -20,11 +20,3 @@ jobs:
             git pull origin main
             npm ci
             pm2 restart vice-verify-bot
-            # The Vice Arcade bot runs from this same checkout as its own process. It is
-            # first started only once its token is in .env, so a deploy before the Vice
-            # Arcade application is set up does not leave PM2 restarting a bot that cannot
-            # log in.
-            if grep -q '^VICE_ARCADE_BOT_TOKEN=.' .env; then
-              pm2 restart vice-arcade-bot || pm2 start arcade.js --name vice-arcade-bot
-              pm2 save
-            fi

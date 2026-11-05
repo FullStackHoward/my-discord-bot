@@ -331,14 +331,6 @@ test('the call to action points at a real way in', () => {
     assert.match(embedJson({ ctaChannelId: '123' }).description, /<#123>/, 'and the channel when there is one');
 });
 
-test('an extra line can be added later without restructuring', () => {
-    const json = embedJson({ extraLine: 'Arcade champion: nobody yet.' });
-
-    assert.match(json.description, /Arcade champion: nobody yet\./);
-    assert.ok(json.description.indexOf('Arcade champion') > json.description.indexOf('Grand Theft Auto'),
-        'after the rankings');
-});
-
 test('a game name cannot break the formatting of the list', () => {
     const json = digest.buildDigestEmbed({
         rows: digest.withChange([{ key: 'k', uniquePlayers: 2, totalMinutes: 60, hours: 1 }], []),
