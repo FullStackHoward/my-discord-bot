@@ -2,7 +2,7 @@
 
 A Discord bot that manages member verification and cross-server access across the Vice Community servers. Built with [discord.js](https://discord.js.org/).
 
-The same codebase also runs the **Vice Arcade bot** (`arcade.js`), a second process logged in as the Vice Arcade application. It owns the arcade's posts, podium roles and departures in Vice Gamers; see [lib/arcade/README.md](lib/arcade/README.md).
+Vice Arcade is not part of this bot. The Vice Arcade bot, its own program logged in as the Vice Arcade application, lives in the vice-arcade repo.
 
 ---
 
@@ -278,13 +278,6 @@ node index.js
 ```bash
 pm2 start index.js --name vice-verify-bot
 pm2 save
-```
-
-The Vice Arcade bot is a second process from the same checkout, with its own token
-(`VICE_ARCADE_BOT_TOKEN`). The deploy starts it once that token is in `.env`:
-```bash
-node arcade.js                                   # development
-pm2 start arcade.js --name vice-arcade-bot       # production
 ```
 
 ### Event Channel Auto-Posting
@@ -728,7 +721,7 @@ Logging never interrupts the action that triggered it: if a log channel is missi
 
 ## Deployment
 
-The bot runs on an AlmaLinux server managed with PM2. Deployments are handled via a GitHub pipeline — pushing to the main branch triggers a pull on the server and restarts `vice-verify-bot` automatically. It restarts `vice-arcade-bot` too, or starts it the first time, but only when `VICE_ARCADE_BOT_TOKEN` is set in the server's `.env`.
+The bot runs on an AlmaLinux server managed with PM2. Deployments are handled via a GitHub pipeline — pushing to the main branch triggers a pull on the server and restarts `vice-verify-bot` automatically.
 
 ---
 
@@ -783,7 +776,6 @@ privileged and need no Developer Portal toggle — the code requesting them is e
 ```
 vice-community-bot/
 ├── index.js                        # Entrypoint: client login and listener wiring only
-├── arcade.js                       # Vice Arcade bot entrypoint: its own login and wiring
 ├── lib/
 │   ├── client.js                   # The shared Client instance (intents, partials)
 │   ├── config.js                   # Everything derived from .env
@@ -818,8 +810,6 @@ vice-community-bot/
 │   │   ├── index.js                # Forum scan, delete logic, leave debounce, reconcile
 │   │   ├── state.js                # Persisted on/off setting for the automatic paths
 │   │   └── command.js              # /gamer-id-sweep and /gamer-id-cleanup
-│   ├── arcade/                     # Vice Arcade's Discord side, run by arcade.js
-│   │   └── README.md               # What it does, its setup and its permissions
 │   └── lobby/
 │       ├── index.js                # Public surface, listeners, boot announcement
 │       ├── guilds.js               # Which guilds run lobbies
