@@ -223,6 +223,11 @@ VC_GAMER_ROLE=
 # VG_GAMER_ID_CHANNEL is accepted as an alias for VG_GAMER_ID_FORUM.
 VG_GAMER_ID_FORUM=
 
+# Introductions forum cleanup. Each server opts in by setting its forum; blank keeps it
+# off there. VG_INTRODUCTIONS_CHANNEL / VC_INTRODUCTIONS_CHANNEL are accepted as aliases.
+VG_INTRODUCTIONS_FORUM=
+VC_INTRODUCTIONS_FORUM=
+
 # LFG lobbies. A server runs them only when its LFG channel is set; with it blank the
 # whole feature is dormant and registers no commands.
 VG_LFG_CHANNEL=
@@ -579,6 +584,40 @@ Safeguards:
 - **Message content is never logged.** The staff-log embeds and `gamer-id-log.jsonl` record author,
   thread and message IDs only, because the content is the thing being removed.
 
+### Introductions Forum Cleanup
+
+Vice Gamers and Vice Creators each opt in by setting their introductions forum. When the member
+who made an introduction post is no longer in the server, **the whole thread is deleted**, so the
+forum lists people who are actually here. It is a sibling of the gamer ID cleanup with the same
+safety posture, and its own toggle: turning gamer ID cleanup on never starts deleting threads.
+
+The same three triggers: a member leaving (60 seconds of quiet, re-checked against Discord so
+anyone who rejoined keeps their thread), a **daily reconcile 50 minutes after boot** and every 24
+hours, and the one-time **`/intros-sweep`** (owner only). `/intros-cleanup enable|disable|status`
+(owner only) controls whether the first two delete. It is **off until switched on**; while off they
+report what they would delete, and with a backlog the daily reconcile posts that report every day
+until the sweep is run.
+
+What is and is not removed:
+
+- **Only threads the departed member started.** Their replies in somebody else's thread are left
+  alone. Deleting a thread **does** delete every reply in it, including current members'; the
+  preview says roughly how many of the threads have replies (from Discord's message count, which is
+  not exact on very old threads).
+- **Pinned threads are never deleted**, whoever owns them.
+- **A thread with no owner ID from Discord is skipped**, never treated as departed.
+- Only thread metadata is read, never messages, so a scan is cheap.
+
+Safeguards carried over from the gamer ID cleanup: `/intros-sweep` always previews (counts, the
+oldest and newest post date, up to five sample titles) and deletes nothing without a Confirm press
+from the owner who ran it; Confirm re-scans rather than trusting the preview; Cancel and the
+5-minute expiry delete nothing; a member list that fails or comes back under 90% of the server's
+count aborts the run; five failures in a row stop it. An archived thread is deleted directly
+first, and only unarchived (once) if Discord refuses; the report says which path each deletion
+took. Thread titles are user-written, so **logs, embeds and the attached preview list carry IDs
+and timestamps only**; the titles appear only in the owner's ephemeral preview.
+`introductions-log.jsonl` records one line per deleted thread.
+
 ### LFG Lobbies
 
 Helps members with awkward schedules line up games together. Everything is bot-side: the
@@ -738,6 +777,7 @@ When inviting the bot to a server, the following permissions are required:
 - Kick Members (required on the Application Server for the auto-kick, and on the main servers for `/purge`)
 - Attach Files (required in every log channel — long activity, purge and gamer ID lists are posted as `.txt` attachments)
 - Manage Messages in the gamer ID forum (to delete departed members' posts), plus Manage Threads if a thread has to be unarchived to delete in it
+- View Channel, Read Message History and Manage Threads in each introductions forum (to delete departed members' threads)
 - In the LFG channel: Send Messages, Embed Links, Create Public Threads, Send Messages in Threads, Read Message History, and Manage Messages — which covers editing the board, deleting finished cards, pinning the board, and removing stray posts when the channel guard is on (plus Pin Messages, if Discord lists it as a separate permission)
 - In the Vice Radar channel: Create Private Threads and Send Messages in Threads (for the group chat the Radar DM offers)
 - In the Vice Radar **callout** channel, when it is a different one: Send Messages and Embed Links (the public callout and the weekly top 5 digest)
@@ -810,6 +850,10 @@ vice-community-bot/
 │   │   ├── index.js                # Forum scan, delete logic, leave debounce, reconcile
 │   │   ├── state.js                # Persisted on/off setting for the automatic paths
 │   │   └── command.js              # /gamer-id-sweep and /gamer-id-cleanup
+│   ├── introductions/
+│   │   ├── index.js                # Thread scan, delete logic, leave debounce, reconcile
+│   │   ├── state.js                # Persisted on/off setting for the automatic paths
+│   │   └── command.js              # /intros-sweep and /intros-cleanup
 │   └── lobby/
 │       ├── index.js                # Public surface, listeners, boot announcement
 │       ├── guilds.js               # Which guilds run lobbies
