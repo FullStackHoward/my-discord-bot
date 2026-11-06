@@ -385,3 +385,13 @@ test('the preview clamps sample titles and counts threads with replies', async (
     assert.match(body, /About \*\*1\*\* of them have replies/);
     assert.match(body, /\*\*2\*\* thread\(s\)/);
 });
+
+test('command definitions fit Discord\'s limits, or registration fails for the whole server', () => {
+    const { INTROS_SWEEP_COMMAND, INTROS_CLEANUP_COMMAND } = require('../lib/introductions/command');
+
+    for (const command of [INTROS_SWEEP_COMMAND, INTROS_CLEANUP_COMMAND]) {
+        assert.ok(command.name.length <= 32, command.name);
+        assert.ok(command.description.length <= 100, `${command.name}: ${command.description.length}`);
+        for (const option of command.options) assert.ok(option.description.length <= 100, option.name);
+    }
+});
