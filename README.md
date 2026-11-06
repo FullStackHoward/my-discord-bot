@@ -228,6 +228,17 @@ VG_GAMER_ID_FORUM=
 VG_INTRODUCTIONS_FORUM=
 VC_INTRODUCTIONS_FORUM=
 
+# Member of the Week. A server runs it only if BOTH its role and channel are set.
+VG_MOTW_ROLE=
+VG_MOTW_CHANNEL=
+VC_MOTW_ROLE=
+VC_MOTW_CHANNEL=
+# Must be exactly "true" to post and move the role. Until then it counts messages and
+# writes a staff-log rehearsal each Monday instead.
+MOTW_ENABLED=
+# Optional, comma separated. Not counted, in addition to ACTIVITY_IGNORED_CHANNELS.
+MOTW_IGNORED_CHANNELS=
+
 # LFG lobbies. A server runs them only when its LFG channel is set; with it blank the
 # whole feature is dormant and registers no commands.
 VG_LFG_CHANNEL=
@@ -618,6 +629,46 @@ took. Thread titles are user-written, so **logs, embeds and the attached preview
 and timestamps only**; the titles appear only in the owner's ephemeral preview.
 `introductions-log.jsonl` records one line per deleted thread.
 
+### Member of the Week
+
+Our replacement for the Mee6 module. Vice Gamers and Vice Creators each opt in by setting both
+a role and an announcement channel. Every **Monday at 9:00 AM Eastern** (`LOBBY_TZ`), for the week
+that just ended, the bot announces the most active member with their avatar and how many messages
+ahead of the runner-up they were, gives them the Member of the Week role, and takes it from whoever
+held it before.
+
+- **Messages only**, counted per server in `motw-state.json` (IDs and counts, no content; three
+  weeks kept). Bots, webhooks, system messages, `ACTIVITY_IGNORED_CHANNELS`, `MOTW_IGNORED_CHANNELS`
+  and threads under those are not counted. Deleted or edited messages are not subtracted.
+- **Who can win:** anyone except bots, the server owner, `VICER_ADMIN`, and that server's staff (the
+  same staff users and roles as everywhere else). Excluded members' messages are still counted, and
+  eligibility is decided at post time. The runner-up must also be eligible and still in the server.
+  Activity exception roles (Event Coordinator, the star roles and so on) **are** eligible.
+- **Ties:** more messages wins; on equal counts, whoever got there first; then the lower user ID.
+- **The post** pings the winner and nobody else, and never mentions the role, so a role failure
+  cannot make it untrue. An empty week, or one where nobody eligible posted, posts nothing and
+  leaves the role where it is.
+- **The role:** given to the winner first, then removed from the previous holder and from anyone
+  else the bot sees holding it (a manual assignment, or the last Mee6 winner). So a role given by
+  hand is taken back the next Monday. The bot's role must sit above the Member of the Week role.
+- **Tracking-only until `MOTW_ENABLED=true`.** Each Monday then writes a staff-log rehearsal of who
+  would have won and who would gain and lose the role, and posts nothing.
+- **Never twice.** A week is marked handled only once its post has gone out. A missing channel or a
+  failed post is retried every minute (logged once an hour); a member lookup that fails for any
+  reason other than "left the server" also retries rather than skipping them. A Monday missed
+  entirely while the bot was down is logged and skipped, not announced late. The first window after
+  setup starts mid-week, so its announcement says so in the footer.
+
+`/motw status` and `/motw standings` (owner only, read-only): whether everything resolves and the
+bot can manage the role and post in the channel; and this week so far, who is excluded and why,
+who would win now, and the announcement exactly as it would be posted. There is deliberately no
+command that posts or resets.
+
+**Rollout:** turn off the Mee6 module first, or two bots will fight over the role. Set the role and
+channel, restart, check `/motw status`, let one Monday run tracking-only and compare the rehearsal
+with `/motw standings` taken just before 9:00, then set `MOTW_ENABLED=true` and restart. Setting it
+up just after a Monday boundary avoids a partial first week.
+
 ### LFG Lobbies
 
 Helps members with awkward schedules line up games together. Everything is bot-side: the
@@ -778,6 +829,7 @@ When inviting the bot to a server, the following permissions are required:
 - Attach Files (required in every log channel — long activity, purge and gamer ID lists are posted as `.txt` attachments)
 - Manage Messages in the gamer ID forum (to delete departed members' posts), plus Manage Threads if a thread has to be unarchived to delete in it
 - View Channel, Read Message History and Manage Threads in each introductions forum (to delete departed members' threads)
+- In each Member of the Week channel: Send Messages and Embed Links. The bot's role must sit above the Member of the Week role
 - In the LFG channel: Send Messages, Embed Links, Create Public Threads, Send Messages in Threads, Read Message History, and Manage Messages — which covers editing the board, deleting finished cards, pinning the board, and removing stray posts when the channel guard is on (plus Pin Messages, if Discord lists it as a separate permission)
 - In the Vice Radar channel: Create Private Threads and Send Messages in Threads (for the group chat the Radar DM offers)
 - In the Vice Radar **callout** channel, when it is a different one: Send Messages and Embed Links (the public callout and the weekly top 5 digest)
@@ -854,6 +906,12 @@ vice-community-bot/
 │   │   ├── index.js                # Thread scan, delete logic, leave debounce, reconcile
 │   │   ├── state.js                # Persisted on/off setting for the automatic paths
 │   │   └── command.js              # /intros-sweep and /intros-cleanup
+│   ├── motw/
+│   │   ├── index.js                # Counting, Monday tick, selection, post, role transfer
+│   │   ├── window.js               # Pure Monday-to-Monday window math
+│   │   ├── store.js                # motw-state.json: weekly counts and results
+│   │   ├── copy.js                 # Announcement wording
+│   │   └── command.js              # /motw status and /motw standings
 │   └── lobby/
 │       ├── index.js                # Public surface, listeners, boot announcement
 │       ├── guilds.js               # Which guilds run lobbies

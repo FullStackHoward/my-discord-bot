@@ -18,6 +18,8 @@ lobby-state.json.corrupt-*
 radar-digest-state.json
 radar-digest-state.json.corrupt-*
 arcade-state.json
+motw-state.json
+motw-state.json.corrupt-*
 data/radar-games.json
 
 # Optional local files

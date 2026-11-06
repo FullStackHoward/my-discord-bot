@@ -36,6 +36,7 @@ const activitySeeding = require('./lib/activity/seeding');
 const activityRoleSweep = require('./lib/activity/role-sweep');
 const gamerId = require('./lib/gamer-id');
 const introductions = require('./lib/introductions');
+const motw = require('./lib/motw');
 const lobby = require('./lib/lobby');
 
 // Bot ready event
@@ -148,6 +149,18 @@ client.once('ready', () => {
             void gameDigest.runDigestTick();
         }, 60 * 1000);
     }
+
+    // Member of the Week. Same shape as the digest: an immediate tick, so a restart at
+    // 9:05 on a Monday catches up, then one a minute. Whether the week is due is decided
+    // inside the tick, and a week is marked handled only once it has posted.
+    if (motw.configuredMotwGuildIds().length > 0) {
+        motw.startFlushing();
+
+        void motw.runMotwTick();
+        setInterval(() => {
+            void motw.runMotwTick();
+        }, 60 * 1000);
+    }
 });
 
 // ---------------------------------------------------------------------------
@@ -172,6 +185,10 @@ client.on('messageCreate', activity.handleMessageCreate);
 // cards only, deleting anything else and DMing the poster what to use instead. Inert
 // unless LOBBY_CHANNEL_GUARD_ENABLED is on.
 client.on('messageCreate', lobby.handleMessageCreate);
+
+// A fourth: counts messages for Member of the Week. Cheap and synchronous, and its own
+// listener so it cannot break the others.
+client.on('messageCreate', motw.handleMessageCreate);
 client.on('voiceStateUpdate', activity.handleVoiceStateUpdate);
 client.on('guildMemberRemove', activity.handleGuildMemberRemove);
 
@@ -183,6 +200,9 @@ client.on('guildMemberRemove', gamerId.handleGuildMemberRemove);
 // Another, for the introductions forum: a departing member's introduction thread is
 // queued for deletion on the same debounce, independently of the gamer ID one.
 client.on('guildMemberRemove', introductions.handleGuildMemberRemove);
+
+// And one for Member of the Week, which drops the leaver's message counts.
+client.on('guildMemberRemove', motw.handleGuildMemberRemove);
 
 // A fourth listener on the same event: clears the leaver's LFG profile, frees their
 // seats and cancels lobbies they were hosting.
@@ -243,6 +263,12 @@ function shutdown(signal) {
         gameDigest.flush();
     } catch (error) {
         console.error('Failed to flush the Radar digest state on shutdown:', error);
+    }
+
+    try {
+        motw.flush();
+    } catch (error) {
+        console.error('Failed to flush the Member of the Week state on shutdown:', error);
     }
 
     process.exit(0);
