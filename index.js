@@ -13,6 +13,8 @@ const {
     ACTIVITY_ROLE_SWEEP_START_DELAY_MS,
     GAMER_ID_RECONCILE_INTERVAL_MS,
     GAMER_ID_RECONCILE_START_DELAY_MS,
+    INTRO_RECONCILE_INTERVAL_MS,
+    INTRO_RECONCILE_START_DELAY_MS,
     LOBBY_SWEEP_INTERVAL_MS,
     LOBBY_SWEEP_START_DELAY_MS,
     SERVER_CONFIGS,
@@ -33,6 +35,7 @@ const activity = require('./lib/activity');
 const activitySeeding = require('./lib/activity/seeding');
 const activityRoleSweep = require('./lib/activity/role-sweep');
 const gamerId = require('./lib/gamer-id');
+const introductions = require('./lib/introductions');
 const lobby = require('./lib/lobby');
 
 // Bot ready event
@@ -105,6 +108,17 @@ client.once('ready', () => {
         }, GAMER_ID_RECONCILE_INTERVAL_MS);
     }, GAMER_ID_RECONCILE_START_DELAY_MS);
 
+    // Introductions forum cleanup. Same shape as the gamer ID one; 50 minutes keeps its
+    // full member fetch clear of the jobs at boot, +5, +20 and +35 minutes.
+    void introductions.announceIntroductionsStartup();
+
+    setTimeout(() => {
+        void introductions.runIntroductionsReconcile();
+        setInterval(() => {
+            void introductions.runIntroductionsReconcile();
+        }, INTRO_RECONCILE_INTERVAL_MS);
+    }, INTRO_RECONCILE_START_DELAY_MS);
+
     // LFG lobbies. State first, then the board, then the minute sweep. The start offset
     // keeps the first pass clear of the other boot work.
     lobby.wireStateHooks();
@@ -165,6 +179,10 @@ client.on('guildMemberRemove', activity.handleGuildMemberRemove);
 // member's gamer ID posts are queued for removal, debounced so a burst of leaves (a /purge
 // run, say) produces one scan rather than one per person.
 client.on('guildMemberRemove', gamerId.handleGuildMemberRemove);
+
+// Another, for the introductions forum: a departing member's introduction thread is
+// queued for deletion on the same debounce, independently of the gamer ID one.
+client.on('guildMemberRemove', introductions.handleGuildMemberRemove);
 
 // A fourth listener on the same event: clears the leaver's LFG profile, frees their
 // seats and cancels lobbies they were hosting.
