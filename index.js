@@ -1,4 +1,5 @@
-require('dotenv').config();
+// Secrets live outside public_html so the web server can never serve them.
+require('dotenv').config({ path: require('path').join(require('os').homedir(), '.config', 'vice-verify-bot', '.env') });
 
 const client = require('./lib/client');
 const {
