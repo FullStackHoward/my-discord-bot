@@ -20,6 +20,10 @@ radar-digest-state.json.corrupt-*
 arcade-state.json
 motw-state.json
 motw-state.json.corrupt-*
+minecraft-state.json
+minecraft-state.json.corrupt-*
+remote-config-cache.json
+remote-config-cache.json.corrupt-*
 data/radar-games.json
 
 # Optional local files

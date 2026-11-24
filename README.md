@@ -276,6 +276,12 @@ LOBBY_BOARD_RADAR_MIN=2
 LOBBY_BOARD_DEBOUNCE_SECONDS=15
 LOBBY_SERIES_LEAD_HOURS=72
 
+# Minecraft Realm post (Vice Gamers only). The channel id and invite link are NOT
+# here: they are managed in Django admin (see Remote Config). BOT_API_SECRET, above,
+# is what lets the bot read them. Both optional; defaults shown.
+MINECRAFT_POST_HOUR=18
+MINECRAFT_TZ=America/New_York
+
 # Reference only, not read by the reconciliation logic
 VG_WAITING_ROOM_CHANNEL=
 VC_WAITING_ROOM_CHANNEL=
@@ -772,6 +778,71 @@ activity tracker, which runs on every message. If that matters, add the LFG chan
 `ACTIVITY_IGNORED_CHANNELS` — that is a change to the activity and purge system, so it is a
 deliberate decision rather than something this feature does on its own.
 
+### Remote Config
+
+Some values are managed in Django admin at api.vicers.net instead of in `.env`, so they can
+be changed while the bot runs with no restart and no server edit. The bot reads them from
+`GET /api/bot-config/?community=vicegamers` (with `X-Bot-Secret`), shortly after boot and
+every 10 minutes after that, from `lib/remote-config/`.
+
+**What moves to Django:** values an admin changes while the bot runs — channel ids, links,
+copy, schedules.
+
+**What stays in `.env`:**
+
+- Secrets and credentials (`BOT_TOKEN`, `BOT_API_SECRET`, anything like them). Never in Django.
+- The guild ids and the API address, because the bot needs them to ask for the rest.
+- Anything the bot must know **at boot** to register slash commands or request intents.
+  Remote values arrive after boot, so they cannot gate command registration.
+
+**Outages:** the last good copy is kept in `remote-config-cache.json` (gitignored) and loaded
+at boot, so an API outage, or a restart during one, keeps running on it. An outage is never
+read as "nothing configured". With no copy at all, features that need it stay idle. Every
+failed fetch is logged to the console; staff get one log entry once the API has been
+unreachable for over an hour, then at most one every 6 hours, and one when it recovers.
+
+Today only the Minecraft Realm post reads it, and only Vice Gamers is mapped. Adding the
+next value means a model and a section in the API's `botconfig` app and a consumer here,
+not a new pipeline. The response contract is additive: unknown keys are ignored, and a
+missing or null section means "no config for that feature".
+
+### Minecraft Realm Post (Vice Gamers only)
+
+One message in the Minecraft channel with the five steps to join the Realm and the invite
+link, pinned, and posted again at the bottom of the channel once a day so people see it. The
+same shape as the LFG board.
+
+Managed in Django admin under **Bot config → Minecraft Realm posts**, one row per community:
+
+| Field | Effect |
+|---|---|
+| Channel id | Where the post lives. Blank turns the post off and leaves any existing post alone. Changing it posts in the new channel, then removes the old post. |
+| Invite link | The exact link Realms gave you. Changing it edits the post in place. Blank leaves the existing post as it is. |
+| Link not working | Swaps the link for a note that admins will update it soon. Untick after pasting the new link. |
+
+Changes reach Discord within about 10 minutes. No restart, no `.env` change. The link is
+shared with the Creators server by hand; there is no Vice Creators code path.
+
+- **Daily resurface** once per day from `MINECRAFT_POST_HOUR` (18:00 Eastern by default)
+  through three hours after it. If the post is already the newest message, nothing is posted.
+  Otherwise a new copy is posted and pinned, then the old one is deleted, so exactly one
+  stays pinned.
+- **Deleted by staff:** a new one is posted and pinned on the next pass.
+- **No pings, no preview card:** mentions are disabled and embeds suppressed on send and edit.
+- **Bad values never reach the channel.** The bot re-checks what the API sends (channel id of
+  17 to 20 digits, an `https://` link with no spaces). An invalid value is ignored in favour of
+  the last good one, with a staff log entry at most once an hour.
+- **Pin notices:** Discord's "pinned a message" notice is deleted, but only the bot's own, and
+  only in the current Minecraft channel. Pins by staff are left alone.
+- A pin failure leaves the post up, unpinned, with a staff log entry at most once an hour.
+
+State is in `minecraft-state.json` (gitignored), written immediately. If it is unreadable it
+is set aside as `.corrupt-<timestamp>` and the bot starts fresh; the worst case is one
+duplicate post to delete by hand.
+
+**This feature never moderates anyone.** It deletes only its own previous posts (checked by
+author before deleting) and its own pin notices. No member messages, kicks, or bans.
+
 ### Staff Activity Log
 
 Each of the three servers has its own bot log channel (`VG_LOG_CHANNEL`, `VC_LOG_CHANNEL`, `APP_LOG_CHANNEL`). Member lifecycle events are posted there as color-coded embeds so staff can scan a channel at a glance:
@@ -831,6 +902,7 @@ When inviting the bot to a server, the following permissions are required:
 - View Channel, Read Message History and Manage Threads in each introductions forum (to delete departed members' threads)
 - In each Member of the Week channel: Send Messages and Embed Links. The bot's role must sit above the Member of the Week role
 - In the LFG channel: Send Messages, Embed Links, Create Public Threads, Send Messages in Threads, Read Message History, and Manage Messages — which covers editing the board, deleting finished cards, pinning the board, and removing stray posts when the channel guard is on (plus Pin Messages, if Discord lists it as a separate permission)
+- In the Minecraft channel: View Channel, Send Messages, Read Message History, and Manage Messages — to pin the post and delete its own old post and pin notices (plus Pin Messages, if Discord lists it separately)
 - In the Vice Radar channel: Create Private Threads and Send Messages in Threads (for the group chat the Radar DM offers)
 - In the Vice Radar **callout** channel, when it is a different one: Send Messages and Embed Links (the public callout and the weekly top 5 digest)
 - Connect / View Channels on voice and stage channels (so voice sessions are visible to activity tracking)
@@ -912,6 +984,16 @@ vice-community-bot/
 │   │   ├── store.js                # motw-state.json: weekly counts and results
 │   │   ├── copy.js                 # Announcement wording
 │   │   └── command.js              # /motw status and /motw standings
+│   ├── remote-config/
+│   │   ├── index.js                # Poller, last good copy, outage logging, consumers
+│   │   ├── api.js                  # GET /api/bot-config/ (never throws)
+│   │   └── cache.js                # remote-config-cache.json
+│   ├── minecraft/
+│   │   ├── index.js                # Each pass: post, edit, move, resurface, pin
+│   │   ├── decide.js               # Validation, state and action decisions (pure)
+│   │   ├── copy.js                 # The post's wording and payload
+│   │   ├── state.js                # minecraft-state.json
+│   │   └── guard.js                # Deletes the bot's own pin notices
 │   └── lobby/
 │       ├── index.js                # Public surface, listeners, boot announcement
 │       ├── guilds.js               # Which guilds run lobbies
@@ -939,6 +1021,8 @@ vice-community-bot/
 ├── gamer-id-state.json             # Gamer ID cleanup on/off setting (never committed)
 ├── lobby-state.json                # LFG profiles, lobbies, crews, series (never committed)
 ├── radar-digest-state.json         # Game minutes, week records, history queue (never committed)
+├── minecraft-state.json            # Where the Minecraft post is and what it says (never committed)
+├── remote-config-cache.json        # Last good config from the Vicers API (never committed)
 ├── test/                           # node:test unit tests for the pure LFG and Radar modules
 ├── .gitignore
 ├── package.json
