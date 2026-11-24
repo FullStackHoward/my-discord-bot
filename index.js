@@ -39,6 +39,9 @@ const gamerId = require('./lib/gamer-id');
 const introductions = require('./lib/introductions');
 const motw = require('./lib/motw');
 const lobby = require('./lib/lobby');
+const remoteConfig = require('./lib/remote-config');
+const minecraft = require('./lib/minecraft');
+const minecraftGuard = require('./lib/minecraft/guard');
 
 // Bot ready event
 client.once('ready', () => {
@@ -162,6 +165,14 @@ client.once('ready', () => {
             void motw.runMotwTick();
         }, 60 * 1000);
     }
+
+    // Remote config: values managed in Django admin. One poller fetches shortly after
+    // boot and every 10 minutes, and after each refresh, good or bad, runs the features
+    // that read it. The Minecraft Realm post is the only one so far. An API outage can
+    // idle it and nothing else.
+    minecraft.loadMinecraftState();
+    remoteConfig.registerConsumer(guildId => minecraft.runMinecraftPass(guildId));
+    remoteConfig.start();
 });
 
 // ---------------------------------------------------------------------------
@@ -190,6 +201,10 @@ client.on('messageCreate', lobby.handleMessageCreate);
 // A fourth: counts messages for Member of the Week. Cheap and synchronous, and its own
 // listener so it cannot break the others.
 client.on('messageCreate', motw.handleMessageCreate);
+
+// A fifth: deletes the bot's own "pinned a message" notice in the Minecraft channel, and
+// nothing else.
+client.on('messageCreate', minecraftGuard.handleMessageCreate);
 client.on('voiceStateUpdate', activity.handleVoiceStateUpdate);
 client.on('guildMemberRemove', activity.handleGuildMemberRemove);
 
