@@ -140,7 +140,8 @@ APP_STAFF_USER_1=
 APP_CHAT=
 APP_SUBMIT_CHANNEL=
 
-# Subscription tier roles (Vicer+, Vicer++, Super Vicer)
+# Subscription tier roles (Vicer+, Vicer++, Super Vicer). Per server, not synced between
+# servers. They identify subscribers for the Active/Inactive exemption and /purge.
 VG_TIER_VICER_PLUS=
 VG_TIER_VICER_PLUS_PLUS=
 VG_TIER_SUPER_VICER=
@@ -337,21 +338,11 @@ Two config notes:
 - If `APP_PENDING_ROLE` or `APP_DENIED_ROLE` is unset, the bot cannot tell an applicant under review apart from someone who never applied, so the apply reminder and its removal are disabled rather than risk removing people mid-review. Denied removals and the accepted/join track are unaffected.
 - If `APP_CHAT` is unset or the channel is unreachable, no reminders are sent, and because nobody can be removed without first being reminded, only the Denied removals still run. Both cases warn at startup.
 
-### Subscription Tier Sync
-
-Vicer+, Vicer++, and Super Vicer are kept in sync between Vice Gamers and Vice Creators:
-
-- Gaining, changing, or losing a tier on one server mirrors it on the other.
-- Joining a server grants whatever tier the member already holds on the other one.
-- A member holding two tier roles at once resolves to the highest.
-- If both servers show a *different* tier for the same member, the bot logs it for manual review and changes nothing — auto-correcting would either upgrade someone for free or downgrade a paying member.
-
 ### Hourly Reconciliation
 
 Every hour (and once at startup) the bot sweeps both main servers to catch anything the live event handlers missed during downtime or a transient API failure:
 
 - Members accepted elsewhere but missing the verified role get it granted, then the auto-kick above runs for them.
-- Tier roles are compared across both servers and synced or flagged as above.
 
 Bots, staff, and server owners are skipped. Every correction posts to the server's bot log channel.
 
@@ -852,14 +843,11 @@ Each of the three servers has its own bot log channel (`VG_LOG_CHANNEL`, `VC_LOG
 | Blurple | Member joined |
 | Green | Auto-verified, manually verified |
 | Orange | Auto-kicked from the Application Server |
-| Pink | Subscription tier granted or synced |
-| Dark red | Subscription tier removed |
-| Yellow | Tier mismatch needing manual review |
 | Red | Operational problems staff need to act on |
 
 Reconciliation entries reuse the join color and are marked with a 🔄 in the title.
 
-Red entries cover anything that silently failed: a verification or auto-kick the bot could not carry out, a tier role it could not grant or remove, a misconfigured events channel, a reconciliation pass that was skipped or crashed, and any unhandled error. Problems that aren't specific to one server — a client error, an unhandled rejection, a reconciliation sweep that crashed — are posted to all three channels. Most red entries name the cause (usually a missing permission or the bot's role sitting too low) so the fix is visible without opening the PM2 log.
+Red entries cover anything that silently failed: a verification or auto-kick the bot could not carry out, a misconfigured events channel, a reconciliation pass that was skipped or crashed, and any unhandled error. Problems that aren't specific to one server — a client error, an unhandled rejection, a reconciliation sweep that crashed — are posted to all three channels. Most red entries name the cause (usually a missing permission or the bot's role sitting too low) so the fix is visible without opening the PM2 log.
 
 Notes on coverage:
 
@@ -909,14 +897,14 @@ When inviting the bot to a server, the following permissions are required:
 
 The bot currently has Administrator on the servers, which covers all of the above.
 Administrator does **not** override role hierarchy, so the bot's own role must still sit
-**above** the verified, tier, Vice Radar, and Active/Inactive roles for it to manage them,
+**above** the verified, Vice Radar, and Active/Inactive roles for it to manage them,
 and above a member's top role to remove them.
 
 ### Privileged Gateway Intents
 
 Enabled on the Bot page of the Discord Developer Portal:
 
-- **Server Members Intent** — member joins, role syncing, reconciliation, activity sweeps, LFG cleanup
+- **Server Members Intent** — member joins, reconciliation, activity sweeps, LFG cleanup
 - **Message Content Intent** — prefix commands and activity message tracking
 - **Presence Intent** — Vice Radar and the weekly top 5 games digest; leave it off and both stop seeing anything, while the rest of the bot is unaffected
 
@@ -946,7 +934,7 @@ vice-community-bot/
 │   ├── utils.js                    # Guild/role/permission helpers
 │   ├── staff-log.js                # Staff log channel embeds
 │   ├── verification.js             # Verification + Application Server exit (Feature A)
-│   ├── tier-sync.js                # Cross-server subscription tiers (Feature B)
+│   ├── subscriber-tier.js          # Subscriber detection from tier roles, used by activity exemption
 │   ├── reconciliation.js           # Hourly reconciliation (Feature C)
 │   ├── application-sweep.js        # Application Server lifecycle (Feature D)
 │   ├── announcements.js            # Posting to the Vicers site API

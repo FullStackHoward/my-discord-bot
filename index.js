@@ -24,7 +24,6 @@ const {
 const { sendStaffLogToAllServers, errorField } = require('./lib/staff-log');
 const { warnAboutMissingConfig } = require('./lib/utils');
 const verification = require('./lib/verification');
-const tierSync = require('./lib/tier-sync');
 const reconciliation = require('./lib/reconciliation');
 const applicationSweep = require('./lib/application-sweep');
 const events = require('./lib/events');
@@ -183,7 +182,6 @@ client.on('guildMemberAdd', verification.handleGuildMemberAdd);
 client.on('guildScheduledEventUserAdd', events.handleScheduledEventUserAdd);
 client.on('messageCreate', prefixCommands.handleMessageCreate);
 client.on('interactionCreate', slashCommands.handleInteractionCreate);
-client.on('guildMemberUpdate', tierSync.handleGuildMemberUpdate);
 client.on('presenceUpdate', (oldPresence, newPresence) => {
     void radar.handlePresenceUpdate(newPresence);
 });
@@ -224,11 +222,10 @@ client.on('guildMemberRemove', motw.handleGuildMemberRemove);
 // seats and cancels lobbies they were hosting.
 client.on('guildMemberRemove', lobby.handleGuildMemberRemove);
 
-// A second guildMemberUpdate listener, beside the tier sync one, so the two features
-// stay independent. Only schedules the newcomer LFG prompt.
+// A guildMemberUpdate listener for the LFG newcomer prompt.
 client.on('guildMemberUpdate', lobby.handleGuildMemberUpdate);
 
-// A third, for Vice Radar: somebody who opts in while already playing is told about the
+// A second, for Vice Radar: somebody who opts in while already playing is told about the
 // match they are in rather than waiting for their next presence event.
 client.on('guildMemberUpdate', radar.handleGuildMemberUpdate);
 
